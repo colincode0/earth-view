@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { getYesterdayIso } from "@/lib/dates";
+import { getLatestTrueColorImagery } from "@/lib/dates";
 import {
   DEFAULT_IMAGERY_ZOOM_DEGREES,
   IMAGERY_ZOOM_MAX_DEGREES,
@@ -35,6 +35,8 @@ type AppState = {
   modalOpen: boolean;
   date: string;
   layerId: string;
+  dateManuallySelected: boolean;
+  layerManuallySelected: boolean;
   imageryZoomDegrees: number;
   selectPoint: (lat: number, lon: number, zoomDegrees?: number) => void;
   recenterPoint: (lat: number, lon: number) => void;
@@ -50,23 +52,35 @@ type AppState = {
   setImageryZoomDegrees: (degrees: number) => void;
 };
 
+const initialTrueColorImagery = getLatestTrueColorImagery();
+
 export const useAppStore = create<AppState>((set) => ({
   selectedPoint: null,
   globeView: null,
   globeFocusRequest: null,
   modalOpen: false,
-  date: getYesterdayIso(),
-  layerId: "viirs-snpp",
+  date: initialTrueColorImagery.date,
+  layerId: initialTrueColorImagery.layerId,
+  dateManuallySelected: false,
+  layerManuallySelected: false,
   imageryZoomDegrees: DEFAULT_IMAGERY_ZOOM_DEGREES,
   selectPoint: (lat, lon, zoomDegrees) =>
-    set((state) => ({
-      selectedPoint: { lat, lon },
-      modalOpen: true,
-      imageryZoomDegrees:
-        zoomDegrees === undefined
-          ? state.imageryZoomDegrees
-          : clamp(zoomDegrees, IMAGERY_ZOOM_MIN_DEGREES, IMAGERY_ZOOM_MAX_DEGREES),
-    })),
+    set((state) => {
+      const latestTrueColorImagery = getLatestTrueColorImagery();
+
+      return {
+        selectedPoint: { lat, lon },
+        modalOpen: true,
+        date: state.dateManuallySelected ? state.date : latestTrueColorImagery.date,
+        layerId: state.layerManuallySelected ? state.layerId : latestTrueColorImagery.layerId,
+        imageryZoomDegrees:
+          zoomDegrees === undefined
+            ? state.globeView?.atMaxZoom
+              ? clamp(state.globeView.lonSpan, IMAGERY_ZOOM_MIN_DEGREES, IMAGERY_ZOOM_MAX_DEGREES)
+              : state.imageryZoomDegrees
+            : clamp(zoomDegrees, IMAGERY_ZOOM_MIN_DEGREES, IMAGERY_ZOOM_MAX_DEGREES),
+      };
+    }),
   recenterPoint: (lat, lon) => set({ selectedPoint: { lat, lon } }),
   setGlobeView: (globeView) => set({ globeView }),
   focusGlobeAt: (lat, lon, options) =>
@@ -86,7 +100,7 @@ export const useAppStore = create<AppState>((set) => ({
         : state.globeView,
     })),
   closeModal: () => set({ modalOpen: false }),
-  setDate: (date) => set({ date }),
-  setLayer: (layerId) => set({ layerId }),
+  setDate: (date) => set({ date, dateManuallySelected: true }),
+  setLayer: (layerId) => set({ layerId, layerManuallySelected: true }),
   setImageryZoomDegrees: (imageryZoomDegrees) => set({ imageryZoomDegrees }),
 }));

@@ -38,8 +38,8 @@ export function buildGibsWmsUrl(layerId: string, params: ImageryRequest) {
   return `${GIBS_WMS_URL}?${search.toString()}`;
 }
 
-export function buildGlobalGibsTextureUrl(date: string, width = 4096) {
-  return buildGibsWmsUrl("VIIRS_SNPP_CorrectedReflectance_TrueColor", {
+export function buildGlobalGibsTextureUrl(layerId: string, date: string, width = 4096) {
+  return buildGibsWmsUrl(layerId, {
     date,
     width,
     height: width / 2,

@@ -1,11 +1,8 @@
-hitting esc from high res closes whole thing
-add date rendering to sentinel view
-everywhere we show a date with exact time
 7 day gif
-cloud piercing
-globe view hotkeys for switching cams
 
-add ports and labels
+add ports and city labels
 ais - ship data, click to view more info
 
-ok now lets define our image variation. Our main issue is that sometimes there are clouds - are their any imagery settings that can pierce the clouds like infrared or something similar? lets explore our imagery options
+ok can we add city labels would that be easy? like a bit more labeling on countries and cities
+
+ok a small thing when we hit escape it goes back to the globe view - but we have a layered modal system. so like if we are in the sentinel view the first time we hit escape that should take us to the first layer modal, then if we hit escape again we go to the default globe view

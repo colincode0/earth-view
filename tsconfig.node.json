@@ -8,5 +8,12 @@
     "strict": true,
     "noEmit": true
   },
-  "include": ["vite.config.ts", "eslint.config.js", "src/server/**/*.ts", "src/types/**/*.ts", "api/**/*.ts"]
+  "include": [
+    "vite.config.ts",
+    "eslint.config.js",
+    "src/lib/sentinelVariants.ts",
+    "src/server/**/*.ts",
+    "src/types/**/*.ts",
+    "api/**/*.ts"
+  ]
 }

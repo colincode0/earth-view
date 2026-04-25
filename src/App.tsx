@@ -1,8 +1,9 @@
 import { Satellite } from "lucide-react";
 import { Globe } from "@/components/Globe/Globe";
+import { CameraHotkeys } from "@/components/Globe/CameraHotkeys";
 import { MaxZoomImagery } from "@/components/Globe/MaxZoomImagery";
 import { ImageryModal } from "@/components/Modal/ImageryModal";
-import { formatLongDate } from "@/lib/dates";
+import { formatImageryDateTime } from "@/lib/dates";
 import { getImageryProvider } from "@/providers/registry";
 import { useAppStore } from "@/store/useAppStore";
 
@@ -15,6 +16,7 @@ export default function App() {
     <main className="relative h-dvh w-screen overflow-hidden bg-space">
       <Globe />
       <MaxZoomImagery />
+      <CameraHotkeys />
 
       <header
         data-testid="app-chrome"
@@ -26,7 +28,7 @@ export default function App() {
         <div className="min-w-0">
           <h1 className="truncate text-base font-semibold tracking-normal">Earth View</h1>
           <p className="truncate text-sm text-muted-foreground">
-            {provider.name} · {formatLongDate(date)}
+            {provider.name} · {formatImageryDateTime(date)}
           </p>
         </div>
       </header>

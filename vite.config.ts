@@ -21,7 +21,7 @@ function sentinelDevApi(env: SentinelDevEnv): Plugin {
         if (req.method !== "POST") {
           res.statusCode = 405;
           res.setHeader("content-type", "application/json");
-          res.end(JSON.stringify({ error: "Use POST for Sentinel-2 image requests." }));
+          res.end(JSON.stringify({ error: "Use POST for Sentinel image requests." }));
           return;
         }
 
@@ -40,7 +40,7 @@ function sentinelDevApi(env: SentinelDevEnv): Plugin {
           res.end(Buffer.from(image.bytes));
         } catch (error) {
           const status = error instanceof SentinelError ? error.status : 500;
-          const message = error instanceof Error ? error.message : "Sentinel-2 request failed.";
+          const message = error instanceof Error ? error.message : "Sentinel request failed.";
 
           res.statusCode = status;
           res.setHeader("content-type", "application/json");

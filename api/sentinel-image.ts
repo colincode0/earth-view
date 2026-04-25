@@ -14,7 +14,7 @@ type VercelResponse = {
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
-    res.status(405).json({ error: "Use POST for Sentinel-2 image requests." });
+    res.status(405).json({ error: "Use POST for Sentinel image requests." });
     return;
   }
 
@@ -30,7 +30,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).send(Buffer.from(image.bytes));
   } catch (error) {
     const status = error instanceof SentinelError ? error.status : 500;
-    const message = error instanceof Error ? error.message : "Sentinel-2 request failed.";
+    const message = error instanceof Error ? error.message : "Sentinel request failed.";
     res.status(status).json({ error: message });
   }
 }

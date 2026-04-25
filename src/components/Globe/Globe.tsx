@@ -4,6 +4,7 @@ import { Suspense, useRef } from "react";
 import { Raycaster, Sphere, Vector2, Vector3 } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { buildGlobalGibsTextureUrl } from "@/providers/GibsProvider";
+import { getImageryProvider } from "@/providers/registry";
 import { useAppStore } from "@/store/useAppStore";
 import { latLonToVector, normalizeLongitude, pointToLatLon } from "@/lib/geo";
 import { Earth } from "./Earth";
@@ -134,8 +135,10 @@ function AdaptiveControls() {
 
 export function Globe() {
   const date = useAppStore((state) => state.date);
+  const layerId = useAppStore((state) => state.layerId);
   const selectPoint = useAppStore((state) => state.selectPoint);
-  const textureUrl = buildGlobalGibsTextureUrl(date);
+  const provider = getImageryProvider(layerId);
+  const textureUrl = buildGlobalGibsTextureUrl(provider.layerId, date);
 
   return (
     <div className="absolute inset-0" data-testid="globe-stage">

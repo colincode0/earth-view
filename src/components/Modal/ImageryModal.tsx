@@ -1,5 +1,5 @@
 import { ArrowLeft, LoaderCircle, MapPinned, Satellite, Sparkles } from "lucide-react";
-import { type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type PointerEvent, type WheelEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -8,6 +8,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   bboxFromPoint,
   bboxHeightKm,
@@ -16,28 +24,29 @@ import {
   formatApproxDistance,
   formatCoordinates,
   normalizeLongitude,
+  zoomPercentToDegrees,
+  degreesToZoomPercent,
 } from "@/lib/geo";
-import { formatLongDate } from "@/lib/dates";
-import { getImageryProvider } from "@/providers/registry";
+import { formatImageryDateTime, formatLongDate } from "@/lib/dates";
+import { getSentinelVariant, sentinelVariants } from "@/lib/sentinelVariants";
+import { getImageryProvider, imageryProviders } from "@/providers/registry";
 import { useAppStore } from "@/store/useAppStore";
 import type { BoundingBox } from "@/types/imagery";
 import { DatePicker } from "./DatePicker";
 import { ImageryInfoButton, ImageryInfoModal } from "./ImageryInfoModal";
 import { LayerSwitcher } from "./LayerSwitcher";
 import { SentinelWorkspace, type SentinelViewport } from "./SentinelWorkspace";
-import { ZoomControl } from "./ZoomControl";
 
 type ModalMode = "regional" | "sentinel";
 
 type SentinelState = {
   imageUrl: string;
   bbox: BoundingBox;
+  variantId: string;
 } | null;
 
 const SENTINEL_DEFAULT_SIZE_DEGREES = 0.09;
-const SENTINEL_NATIVE_METERS = 10;
 const SENTINEL_RENDER_SIZE = 1024;
-const SENTINEL_MIN_NATIVE_KM = (SENTINEL_NATIVE_METERS * SENTINEL_RENDER_SIZE) / 1000;
 
 export function ImageryModal() {
   const {
@@ -53,12 +62,15 @@ export function ImageryModal() {
     recenterPoint,
   } = useAppStore();
   const imagePaneRef = useRef<HTMLDivElement>(null);
+  const wasModalOpenRef = useRef(false);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewZoomDegrees, setPreviewZoomDegrees] = useState(imageryZoomDegrees);
+  const [loadedImageZoomDegrees, setLoadedImageZoomDegrees] = useState(imageryZoomDegrees);
   const [infoOpen, setInfoOpen] = useState(false);
   const [mode, setMode] = useState<ModalMode>("regional");
+  const [sentinelVariantId, setSentinelVariantId] = useState(sentinelVariants[0].id);
   const [sentinelState, setSentinelState] = useState<SentinelState>(null);
   const [sentinelLoading, setSentinelLoading] = useState(false);
   const [sentinelError, setSentinelError] = useState<string | null>(null);
@@ -68,6 +80,8 @@ export function ImageryModal() {
     y: 0,
   });
   const [regionalPan, setRegionalPan] = useState({ x: 0, y: 0 });
+  const [committedRegionalPan, setCommittedRegionalPan] = useState({ x: 0, y: 0 });
+  const zoomCommitTimerRef = useRef<number | null>(null);
   const [regionalDragStart, setRegionalDragStart] = useState<{
     pointerId: number;
     x: number;
@@ -85,15 +99,24 @@ export function ImageryModal() {
     return bboxFromPoint(selectedPoint.lat, selectedPoint.lon, imageryZoomDegrees);
   }, [imageryZoomDegrees, selectedPoint]);
 
+  function preloadImage(url: string) {
+    return new Promise<void>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve();
+      image.onerror = reject;
+      image.src = url;
+    });
+  }
+
   useEffect(() => {
     if (!modalOpen || !bbox) {
       return;
     }
 
     let cancelled = false;
+    const requestZoomDegrees = imageryZoomDegrees;
     setImageLoading(true);
     setError(null);
-    setRegionalPan({ x: 0, y: 0 });
     setRegionalDragStart(null);
     setMode("regional");
     setSentinelState(null);
@@ -102,17 +125,24 @@ export function ImageryModal() {
 
     provider
       .fetchImage({ bbox, date, width: 1024, height: 1024 })
-      .then((result) => {
+      .then(async (result) => {
         if (cancelled) {
           return;
         }
 
-        if (typeof result === "string") {
-          setImageUrl(result);
+        const nextImageUrl = typeof result === "string" ? result : URL.createObjectURL(result);
+        await preloadImage(nextImageUrl);
+
+        if (cancelled) {
           return;
         }
 
-        setImageUrl(URL.createObjectURL(result));
+        setImageUrl(nextImageUrl);
+        setLoadedImageZoomDegrees(requestZoomDegrees);
+        setPreviewZoomDegrees(requestZoomDegrees);
+        setRegionalPan({ x: 0, y: 0 });
+        setCommittedRegionalPan({ x: 0, y: 0 });
+        setImageLoading(false);
       })
       .catch(() => {
         if (!cancelled) {
@@ -124,30 +154,82 @@ export function ImageryModal() {
     return () => {
       cancelled = true;
     };
-  }, [bbox, date, modalOpen, provider]);
+  }, [bbox, date, imageryZoomDegrees, modalOpen, provider]);
 
   useEffect(() => {
-    if (modalOpen) {
+    if (modalOpen && !wasModalOpenRef.current) {
       setPreviewZoomDegrees(imageryZoomDegrees);
+      setLoadedImageZoomDegrees(imageryZoomDegrees);
     }
+
+    wasModalOpenRef.current = modalOpen;
   }, [imageryZoomDegrees, modalOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (zoomCommitTimerRef.current !== null) {
+        window.clearTimeout(zoomCommitTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!modalOpen || mode !== "regional") {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+
+      const target = event.target;
+
+      if (
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const index = Number(event.key) - 1;
+
+      if (!Number.isInteger(index) || index < 0 || index >= imageryProviders.length) {
+        return;
+      }
+
+      event.preventDefault();
+      setLayer(imageryProviders[index].id);
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [modalOpen, mode, setLayer]);
 
   const coordinates = selectedPoint
     ? formatCoordinates(selectedPoint.lat, selectedPoint.lon)
     : "";
-  const imagePreviewScale = imageryZoomDegrees / previewZoomDegrees;
+  const captureLabel = formatImageryDateTime(date);
+  const imagePreviewScale = loadedImageZoomDegrees / previewZoomDegrees;
   const displayedImageLabel = provider.name;
+  const selectedSentinelVariant = getSentinelVariant(sentinelVariantId);
+  const renderedSentinelVariant = getSentinelVariant(sentinelState?.variantId);
+  const defaultSentinelVariant = sentinelVariants[0];
 
-  function expandBboxToNativeLimit(inputBbox: BoundingBox) {
+  function expandBboxToNativeLimit(inputBbox: BoundingBox, nativeMeters: number) {
     const widthKm = bboxWidthKm(inputBbox);
     const heightKm = bboxHeightKm(inputBbox);
     const currentMaxKm = Math.max(widthKm, heightKm);
+    const minNativeKm = (nativeMeters * SENTINEL_RENDER_SIZE) / 1000;
 
-    if (currentMaxKm >= SENTINEL_MIN_NATIVE_KM || currentMaxKm <= 0) {
+    if (currentMaxKm >= minNativeKm || currentMaxKm <= 0) {
       return inputBbox;
     }
 
-    const scale = SENTINEL_MIN_NATIVE_KM / currentMaxKm;
+    const scale = minNativeKm / currentMaxKm;
     const centerLat = (inputBbox.minLat + inputBbox.maxLat) / 2;
     const centerLon = normalizeLongitude((inputBbox.minLon + inputBbox.maxLon) / 2);
     const nextLatSpan = (inputBbox.maxLat - inputBbox.minLat) * scale;
@@ -161,11 +243,16 @@ export function ImageryModal() {
     };
   }
 
-  async function requestSentinelImage(sentinelBbox: BoundingBox) {
+  async function requestSentinelImage(
+    sentinelBbox: BoundingBox,
+    variantId = sentinelVariantId,
+  ) {
     if (!selectedPoint) {
       return;
     }
 
+    const variant = getSentinelVariant(variantId);
+    setSentinelVariantId(variant.id);
     setSentinelLoading(true);
     setSentinelError(null);
 
@@ -178,13 +265,14 @@ export function ImageryModal() {
         body: JSON.stringify({
           bbox: sentinelBbox,
           date,
+          variantId: variant.id,
           width: SENTINEL_RENDER_SIZE,
           height: SENTINEL_RENDER_SIZE,
         }),
       });
 
       if (!response.ok) {
-        let message = "Sentinel-2 imagery is unavailable for this area/date.";
+        let message = `${variant.name} imagery is unavailable for this area/date.`;
 
         try {
           const body = (await response.json()) as { error?: string };
@@ -200,14 +288,16 @@ export function ImageryModal() {
       setSentinelState({
         imageUrl: URL.createObjectURL(blob),
         bbox: sentinelBbox,
+        variantId: variant.id,
       });
+      setSentinelVariantId(variant.id);
       setSentinelViewport({ scale: 1, x: 0, y: 0 });
       setMode("sentinel");
     } catch (requestError) {
       setSentinelError(
         requestError instanceof Error
           ? requestError.message
-          : "Sentinel-2 image request failed.",
+          : `${variant.name} image request failed.`,
       );
     } finally {
       setSentinelLoading(false);
@@ -226,7 +316,9 @@ export function ImageryModal() {
           center.lon,
           Math.min(imageryZoomDegrees, SENTINEL_DEFAULT_SIZE_DEGREES),
         ),
+        defaultSentinelVariant.resolution,
       ),
+      defaultSentinelVariant.id,
     );
   }
 
@@ -288,27 +380,53 @@ export function ImageryModal() {
       maxLon: clamp(nextLon + nextLonSpan / 2, -180, 180),
     };
 
-    return respectNativeLimit ? expandBboxToNativeLimit(nextBbox) : nextBbox;
+    return respectNativeLimit
+      ? expandBboxToNativeLimit(nextBbox, renderedSentinelVariant.resolution)
+      : nextBbox;
   }
 
   async function commitSentinelPan(viewport: SentinelViewport) {
+    if (sentinelLoading || !sentinelState) {
+      return;
+    }
+
+    const variantId = sentinelState.variantId;
     const nextBbox = sentinelBboxForViewport(viewport, true);
 
     if (!nextBbox) {
       return;
     }
 
-    await requestSentinelImage(nextBbox);
+    await requestSentinelImage(nextBbox, variantId);
   }
 
   async function refineSentinelView() {
+    if (sentinelLoading || !sentinelState) {
+      return;
+    }
+
+    const variantId = sentinelState.variantId;
     const nextBbox = sentinelBboxForViewport(sentinelViewport, true);
 
     if (!nextBbox) {
       return;
     }
 
-    await requestSentinelImage(nextBbox);
+    await requestSentinelImage(nextBbox, variantId);
+  }
+
+  async function changeSentinelVariant(nextVariantId: string) {
+    setSentinelVariantId(nextVariantId);
+
+    if (sentinelLoading || !sentinelState) {
+      return;
+    }
+
+    const nextVariant = getSentinelVariant(nextVariantId);
+    await requestSentinelImage(
+      expandBboxToNativeLimit(sentinelState.bbox, nextVariant.resolution),
+      nextVariant.id,
+    );
   }
 
   function exitSentinelMode() {
@@ -335,8 +453,31 @@ export function ImageryModal() {
     const nextLat = clamp(selectedPoint.lat + (nextPan.y / rect.height) * latSpan, -85, 85);
     const nextLon = normalizeLongitude(selectedPoint.lon - (nextPan.x / rect.width) * lonSpan);
 
-    setRegionalPan({ x: 0, y: 0 });
+    setCommittedRegionalPan(nextPan);
+    setRegionalPan(nextPan);
     recenterPoint(nextLat, nextLon);
+  }
+
+  function previewRegionalZoom(nextDegrees: number) {
+    setPreviewZoomDegrees(nextDegrees);
+
+    if (zoomCommitTimerRef.current !== null) {
+      window.clearTimeout(zoomCommitTimerRef.current);
+    }
+
+    zoomCommitTimerRef.current = window.setTimeout(() => {
+      setImageryZoomDegrees(nextDegrees);
+      zoomCommitTimerRef.current = null;
+    }, 260);
+  }
+
+  function zoomRegionalImage(event: WheelEvent<HTMLImageElement>) {
+    event.preventDefault();
+
+    const currentPercent = degreesToZoomPercent(previewZoomDegrees);
+    const nextPercent = clamp(currentPercent + (event.deltaY > 0 ? -1 : 1), 0, 100);
+
+    previewRegionalZoom(zoomPercentToDegrees(nextPercent));
   }
 
   const sentinelWidth = sentinelState ? bboxWidthKm(sentinelState.bbox) : 0;
@@ -368,6 +509,7 @@ export function ImageryModal() {
               <SentinelWorkspace
                 imageUrl={sentinelState.imageUrl}
                 bbox={sentinelState.bbox}
+                captureLabel={captureLabel}
                 onViewportChange={setSentinelViewport}
                 onPanCommit={(viewport) => void commitSentinelPan(viewport)}
               />
@@ -378,11 +520,16 @@ export function ImageryModal() {
                 alt=""
                 data-testid="gibs-image"
                 draggable={false}
-                className="h-full w-full cursor-grab select-none object-cover transition-transform duration-75 active:cursor-grabbing"
+                className="h-full w-full cursor-grab select-none object-cover active:cursor-grabbing"
                 style={{
                   transform: `translate(${regionalPan.x}px, ${regionalPan.y}px) scale(${imagePreviewScale})`,
                   transformOrigin: "center",
+                  transition:
+                    regionalDragStart || imageLoading
+                      ? "none"
+                      : "transform 160ms ease-out",
                 }}
+                onWheel={zoomRegionalImage}
                 onPointerDown={(event) => {
                   if (event.shiftKey) {
                     const point = pointFromRegionalEvent(event);
@@ -399,8 +546,8 @@ export function ImageryModal() {
                     pointerId: event.pointerId,
                     x: event.clientX,
                     y: event.clientY,
-                    originX: regionalPan.x,
-                    originY: regionalPan.y,
+                    originX: committedRegionalPan.x,
+                    originY: committedRegionalPan.y,
                   });
                 }}
                 onPointerMove={(event) => {
@@ -426,7 +573,7 @@ export function ImageryModal() {
                 }}
                 onPointerCancel={() => {
                   setRegionalDragStart(null);
-                  setRegionalPan({ x: 0, y: 0 });
+                  setRegionalPan(committedRegionalPan);
                 }}
                 onLoad={() => setImageLoading(false)}
                 onError={() => {
@@ -435,22 +582,33 @@ export function ImageryModal() {
                 }}
               />
             ) : null}
-            {(imageLoading || !imageUrl) && !error && (
+            {!imageUrl && imageLoading && !error && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/70">
                 <LoaderCircle className="h-8 w-8 animate-spin text-primary" />
+              </div>
+            )}
+            {imageUrl && imageLoading && mode === "regional" && !error && (
+              <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 rounded-md border border-white/10 bg-black/55 px-2 py-1 text-xs text-white/85 backdrop-blur">
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin text-primary" />
+                Updating
               </div>
             )}
             {sentinelLoading && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/55">
                 <div className="flex items-center gap-2 rounded-md border border-white/10 bg-background/80 px-3 py-2 text-sm shadow-xl backdrop-blur">
                   <LoaderCircle className="h-4 w-4 animate-spin text-primary" />
-                  Rendering Sentinel-2
+                  Rendering {selectedSentinelVariant.name}
                 </div>
               </div>
             )}
             {imageUrl && mode === "regional" && (
               <div className="absolute left-3 top-3 rounded-md border border-white/10 bg-black/55 px-2 py-1 text-xs text-white/85 backdrop-blur">
                 {displayedImageLabel}
+              </div>
+            )}
+            {imageUrl && mode === "regional" && (
+              <div className="absolute right-3 top-3 max-w-[calc(100%-1.5rem)] rounded-md border border-white/10 bg-black/55 px-2 py-1 text-right text-xs text-white/85 backdrop-blur">
+                {captureLabel}
               </div>
             )}
             {error && (
@@ -472,11 +630,11 @@ export function ImageryModal() {
             <div className="rounded-md border border-border bg-background/45 p-4">
               <div className="mb-1 flex items-center gap-2 text-sm font-medium">
                 <Satellite className="h-4 w-4 text-primary" />
-                {mode === "sentinel" ? "Sentinel-2 L2A" : provider.name}
+                {mode === "sentinel" ? renderedSentinelVariant.name : provider.name}
               </div>
               <div className="text-sm text-muted-foreground">
                 {mode === "sentinel"
-                  ? "Copernicus · 10m visible bands"
+                  ? `Copernicus · ${renderedSentinelVariant.resolution}m ${renderedSentinelVariant.category}`
                   : `${provider.satellite} · ${provider.resolution}m nominal`}
               </div>
             </div>
@@ -492,6 +650,31 @@ export function ImageryModal() {
                   <ArrowLeft className="h-4 w-4" />
                   Back to regional view
                 </Button>
+
+                <div className="space-y-2">
+                  <Label htmlFor="sentinel-variant" className="inline-flex items-center gap-2">
+                    <Satellite className="h-3.5 w-3.5" />
+                    Sentinel layer
+                  </Label>
+                  <Select
+                    value={sentinelVariantId}
+                    onValueChange={(value) => void changeSentinelVariant(value)}
+                  >
+                    <SelectTrigger id="sentinel-variant">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sentinelVariants.map((variant) => (
+                        <SelectItem key={variant.id} value={variant.id}>
+                          {variant.shortName} · {variant.category}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {selectedSentinelVariant.caveat}
+                  </p>
+                </div>
 
                 <Button
                   type="button"
@@ -513,11 +696,13 @@ export function ImageryModal() {
                   <div>Area: {formatApproxDistance(Math.max(sentinelWidth, sentinelHeight) / 111)} wide</div>
                   <div>
                     Request scale: ~{sentinelNativeMeters.toFixed(1)}m/px
-                    {sentinelNativeMeters < SENTINEL_NATIVE_METERS ? " (native limit)" : ""}
+                    {sentinelNativeMeters < renderedSentinelVariant.resolution
+                      ? " (native limit)"
+                      : ""}
                   </div>
                   <div className="mt-3 leading-relaxed">
                     Drag the image to pan. Use wheel or trackpad scroll to zoom client-side. A
-                    later refine action can request a new Sentinel image for the current view.
+                    later refine action can request a new image for the current view.
                   </div>
                 </div>
               </>
@@ -549,12 +734,6 @@ export function ImageryModal() {
                   action={<ImageryInfoButton onClick={() => setInfoOpen(true)} />}
                 />
                 <DatePicker value={date} onChange={setDate} />
-                <ZoomControl
-                  value={imageryZoomDegrees}
-                  previewValue={previewZoomDegrees}
-                  onPreviewChange={setPreviewZoomDegrees}
-                  onCommit={setImageryZoomDegrees}
-                />
               </>
             )}
           </aside>

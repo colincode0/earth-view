@@ -23,20 +23,30 @@ export function Earth({ textureUrl, onSelect }: EarthProps) {
     texture.needsUpdate = true;
   }, [gl, texture]);
 
-  function handleClick(event: ThreeEvent<MouseEvent>) {
+  function selectEventPoint(event: ThreeEvent<MouseEvent>) {
     event.stopPropagation();
-    if (!event.nativeEvent.shiftKey) {
-      return;
-    }
 
     const point = new Vector3().copy(event.point).normalize();
     const { lat, lon } = pointToLatLon(point);
     onSelect(lat, lon);
   }
 
+  function handleClick(event: ThreeEvent<MouseEvent>) {
+    if (!event.nativeEvent.shiftKey) {
+      return;
+    }
+
+    selectEventPoint(event);
+  }
+
+  function handleContextMenu(event: ThreeEvent<MouseEvent>) {
+    event.nativeEvent.preventDefault();
+    selectEventPoint(event);
+  }
+
   return (
     <group>
-      <mesh onClick={handleClick} castShadow receiveShadow>
+      <mesh onClick={handleClick} onContextMenu={handleContextMenu} castShadow receiveShadow>
         <sphereGeometry args={[1, 128, 128]} />
         <meshStandardMaterial
           map={texture}

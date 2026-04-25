@@ -1,4 +1,5 @@
 import type { BoundingBox } from "../types/imagery";
+import { getSentinelVariant } from "../lib/sentinelVariants";
 
 const TOKEN_URL =
   "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token";
@@ -7,6 +8,7 @@ const PROCESS_URL = "https://sh.dataspace.copernicus.eu/api/v1/process";
 type SentinelRequest = {
   bbox: BoundingBox;
   date: string;
+  variantId?: string;
   width?: number;
   height?: number;
 };
@@ -82,10 +84,10 @@ async function getAccessToken(env: SentinelEnv) {
   return tokenCache.token;
 }
 
-function dateWindow(date: string) {
+function dateWindow(date: string, requestWindowDays: number) {
   const end = new Date(`${date}T23:59:59Z`);
   const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - 10);
+  start.setUTCDate(start.getUTCDate() - requestWindowDays);
 
   return {
     from: start.toISOString(),
@@ -95,21 +97,59 @@ function dateWindow(date: string) {
 
 function validateRequest(input: SentinelRequest) {
   if (!input.bbox || !input.date) {
-    throw new SentinelError("Missing bbox or date for Sentinel-2 request.", 400);
+    throw new SentinelError("Missing bbox or date for Sentinel request.", 400);
   }
 
   return {
     bbox: input.bbox,
     date: input.date,
+    variantId: input.variantId,
     width: Math.min(1024, Math.max(256, Math.round(input.width ?? 1024))),
     height: Math.min(1024, Math.max(256, Math.round(input.height ?? 1024))),
   };
 }
 
+function dataConfig(
+  variant: ReturnType<typeof getSentinelVariant>,
+  timeRange: ReturnType<typeof dateWindow>,
+) {
+  if (variant.collection === "sentinel-1-grd") {
+    return {
+      type: variant.collection,
+      dataFilter: {
+        timeRange,
+        mosaickingOrder: "mostRecent",
+        acquisitionMode: "IW",
+        polarization: "DV",
+        resolution: "HIGH",
+      },
+      processing: {
+        orthorectify: true,
+        backCoeff: "GAMMA0_TERRAIN",
+        speckleFilter: {
+          type: "LEE",
+          windowSizeX: 3,
+          windowSizeY: 3,
+        },
+      },
+    };
+  }
+
+  return {
+    type: variant.collection,
+    dataFilter: {
+      timeRange,
+      mosaickingOrder: "leastCC",
+      maxCloudCoverage: 60,
+    },
+  };
+}
+
 export async function fetchSentinelImage(input: SentinelRequest, env: SentinelEnv) {
   const request = validateRequest(input);
+  const variant = getSentinelVariant(request.variantId);
   const token = await getAccessToken(env);
-  const timeRange = dateWindow(request.date);
+  const timeRange = dateWindow(request.date, variant.requestWindowDays);
 
   const body = {
     input: {
@@ -125,13 +165,7 @@ export async function fetchSentinelImage(input: SentinelRequest, env: SentinelEn
         },
       },
       data: [
-        {
-          type: "sentinel-2-l2a",
-          dataFilter: {
-            timeRange,
-            mosaickingOrder: "leastCC",
-          },
-        },
+        dataConfig(variant, timeRange),
       ],
     },
     output: {
@@ -146,22 +180,7 @@ export async function fetchSentinelImage(input: SentinelRequest, env: SentinelEn
         },
       ],
     },
-    evalscript: `//VERSION=3
-function setup() {
-  return {
-    input: ["B04", "B03", "B02", "dataMask"],
-    output: { bands: 4 }
-  };
-}
-
-function evaluatePixel(sample) {
-  return [
-    Math.min(1, 2.5 * sample.B04),
-    Math.min(1, 2.5 * sample.B03),
-    Math.min(1, 2.5 * sample.B02),
-    sample.dataMask
-  ];
-}`,
+    evalscript: variant.evalscript,
   };
 
   const response = await fetch(PROCESS_URL, {
