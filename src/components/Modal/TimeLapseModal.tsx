@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { formatExactCaptureTime } from "@/lib/captureTime";
 import { formatLongDate } from "@/lib/dates";
 
 export type TimeLapseFrame = {
@@ -28,15 +29,7 @@ type TimeLapseModalProps = {
 
 function formatFrameDate(value: string) {
   if (value.includes("T")) {
-    return new Intl.DateTimeFormat("en", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      timeZone: "UTC",
-      timeZoneName: "short",
-    }).format(new Date(value));
+    return formatExactCaptureTime(value);
   }
 
   return formatLongDate(value);

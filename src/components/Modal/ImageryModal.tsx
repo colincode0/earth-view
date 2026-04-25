@@ -36,7 +36,12 @@ import {
   zoomPercentToDegrees,
   degreesToZoomPercent,
 } from "@/lib/geo";
-import { formatImageryDateTime, formatLongDate, getRecentIsoDates } from "@/lib/dates";
+import {
+  formatExactCaptureTime,
+  formatGibsCaptureTime,
+  formatSentinelCaptureTime,
+} from "@/lib/captureTime";
+import { getRecentIsoDates } from "@/lib/dates";
 import { getSentinelVariant, sentinelVariants } from "@/lib/sentinelVariants";
 import { getImageryProvider, imageryProviders } from "@/providers/registry";
 import { useAppStore } from "@/store/useAppStore";
@@ -53,6 +58,7 @@ type SentinelState = {
   imageUrl: string;
   bbox: BoundingBox;
   variantId: string;
+  sceneDateTime?: string;
 } | null;
 
 type SentinelScene = {
@@ -63,9 +69,15 @@ type SentinelScene = {
 
 const SENTINEL_DEFAULT_SIZE_DEGREES = 0.09;
 const SENTINEL_RENDER_SIZE = 1024;
+const SENTINEL_SCENE_LOOKBACK_DAYS = 730;
 const TIME_LAPSE_SPEEDS = {
   7: 650,
   30: 180,
+};
+
+type SentinelTimeLapseCacheValue = {
+  frames: TimeLapseFrame[];
+  error: string | null;
 };
 
 function bboxFromSpans(lat: number, lon: number, latSpan: number, lonSpan: number): BoundingBox {
@@ -75,6 +87,17 @@ function bboxFromSpans(lat: number, lon: number, latSpan: number, lonSpan: numbe
     minLon: clamp(lon - lonSpan / 2, -180, 180),
     maxLon: clamp(lon + lonSpan / 2, -180, 180),
   };
+}
+
+function sentinelTimeLapseBboxKey(bbox: BoundingBox) {
+  return [
+    bbox.minLat,
+    bbox.minLon,
+    bbox.maxLat,
+    bbox.maxLon,
+  ]
+    .map((value) => value.toFixed(6))
+    .join(",");
 }
 
 export function ImageryModal() {
@@ -93,6 +116,8 @@ export function ImageryModal() {
   const imagePaneRef = useRef<HTMLDivElement | null>(null);
   const wasModalOpenRef = useRef(false);
   const imageScopeRef = useRef<string | null>(null);
+  const sentinelTimeLapseCacheRef = useRef(new Map<string, SentinelTimeLapseCacheValue>());
+  const sentinelTimeLapseScopeRef = useRef<string | null>(null);
   const [imagePaneNode, setImagePaneNode] = useState<HTMLDivElement | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
@@ -265,14 +290,41 @@ export function ImageryModal() {
     }
   }
 
+  function getSentinelTimeLapseScope() {
+    if (!sentinelState) {
+      return null;
+    }
+
+    return [
+      date,
+      sentinelState.variantId,
+      sentinelTimeLapseBboxKey(sentinelState.bbox),
+      sentinelViewport.scale.toFixed(3),
+      sentinelViewport.x.toFixed(1),
+      sentinelViewport.y.toFixed(1),
+    ].join("|");
+  }
+
   async function loadSentinelTimeLapse(dayCount: 7 | 30) {
     if (!sentinelState) {
       return;
     }
 
     const variant = getSentinelVariant(sentinelState.variantId);
+    const cacheScope = getSentinelTimeLapseScope();
+    const cacheKey = cacheScope ? `${cacheScope}|${dayCount}` : null;
+    const cached = cacheKey ? sentinelTimeLapseCacheRef.current.get(cacheKey) : undefined;
+
     setTimeLapseDays(dayCount);
     setTimeLapseOpen(true);
+
+    if (cached) {
+      setTimeLapseFrames(cached.frames);
+      setTimeLapseError(cached.error);
+      setTimeLapseLoading(false);
+      return;
+    }
+
     setTimeLapseFrames([]);
     setTimeLapseError(null);
     setTimeLapseLoading(true);
@@ -288,6 +340,7 @@ export function ImageryModal() {
           date,
           variantId: variant.id,
           limit: dayCount,
+          lookbackDays: SENTINEL_SCENE_LOOKBACK_DAYS,
         }),
       });
 
@@ -313,6 +366,12 @@ export function ImageryModal() {
         setTimeLapseFrames([]);
         setTimeLapseLoading(false);
         setTimeLapseError(`No distinct ${variant.name} scenes were found for this view.`);
+        if (cacheKey) {
+          sentinelTimeLapseCacheRef.current.set(cacheKey, {
+            frames: [],
+            error: `No distinct ${variant.name} scenes were found for this view.`,
+          });
+        }
         return;
       }
 
@@ -356,12 +415,23 @@ export function ImageryModal() {
       setTimeLapseFrames(loadedSceneFrames);
       setTimeLapseLoading(false);
 
+      let nextError: string | null = null;
+
       if (loadedSceneFrames.length === 0) {
-        setTimeLapseError(`No ${variant.name} scene frames were available for this view.`);
+        nextError = `No ${variant.name} scene frames were available for this view.`;
       } else if (loadedSceneFrames.length < distinctScenes.length) {
-        setTimeLapseError("Some Sentinel scene frames were unavailable, so the sequence is partial.");
+        nextError = "Some Sentinel scene frames were unavailable, so the sequence is partial.";
       } else if (loadedSceneFrames.length < dayCount) {
-        setTimeLapseError(`Only ${loadedSceneFrames.length} distinct scenes were found.`);
+        nextError = `Only ${loadedSceneFrames.length} distinct scenes were found in the latest available imagery.`;
+      }
+
+      setTimeLapseError(nextError);
+
+      if (cacheKey) {
+        sentinelTimeLapseCacheRef.current.set(cacheKey, {
+          frames: loadedSceneFrames,
+          error: nextError,
+        });
       }
     } catch (sceneError) {
       setTimeLapseFrames([]);
@@ -370,6 +440,30 @@ export function ImageryModal() {
         sceneError instanceof Error ? sceneError.message : "Sentinel scene search failed.",
       );
     }
+  }
+
+  async function fetchLatestSentinelScene(sentinelBbox: BoundingBox, variantId: string) {
+    const variant = getSentinelVariant(variantId);
+    const response = await fetch("/api/sentinel-scenes", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        bbox: sentinelBbox,
+        date,
+        variantId: variant.id,
+        limit: 1,
+        lookbackDays: variant.requestWindowDays,
+      }),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const { scenes } = (await response.json()) as { scenes?: SentinelScene[] };
+    return scenes?.[0] ?? null;
   }
 
   useEffect(() => {
@@ -491,6 +585,26 @@ export function ImageryModal() {
   }, []);
 
   useEffect(() => {
+    const nextScope = sentinelState
+      ? [
+          date,
+          sentinelState.variantId,
+          sentinelTimeLapseBboxKey(sentinelState.bbox),
+          sentinelViewport.scale.toFixed(3),
+          sentinelViewport.x.toFixed(1),
+          sentinelViewport.y.toFixed(1),
+        ].join("|")
+      : null;
+
+    if (sentinelTimeLapseScopeRef.current === nextScope) {
+      return;
+    }
+
+    sentinelTimeLapseScopeRef.current = nextScope;
+    sentinelTimeLapseCacheRef.current.clear();
+  }, [date, sentinelState, sentinelViewport.scale, sentinelViewport.x, sentinelViewport.y]);
+
+  useEffect(() => {
     if (!modalOpen || mode !== "regional") {
       return;
     }
@@ -529,11 +643,21 @@ export function ImageryModal() {
   const coordinates = selectedPoint
     ? formatCoordinates(selectedPoint.lat, selectedPoint.lon)
     : "";
-  const captureLabel = formatImageryDateTime(date);
+  const regionalCaptureLabel = formatGibsCaptureTime(date, provider.id, selectedLon);
   const imagePreviewScale = loadedImageZoomDegrees / previewZoomDegrees;
-  const displayedImageLabel = provider.name;
   const selectedSentinelVariant = getSentinelVariant(sentinelVariantId);
   const renderedSentinelVariant = getSentinelVariant(sentinelState?.variantId);
+  const sentinelCaptureLabel = formatSentinelCaptureTime(
+    date,
+    renderedSentinelVariant.id,
+    selectedLon,
+  );
+  const captureLabel =
+    mode === "sentinel" && sentinelState?.sceneDateTime
+      ? formatExactCaptureTime(sentinelState.sceneDateTime)
+      : mode === "sentinel"
+        ? sentinelCaptureLabel
+        : regionalCaptureLabel;
   const defaultSentinelVariant = sentinelVariants[0];
 
   function expandBboxToNativeLimit(inputBbox: BoundingBox, nativeMeters: number) {
@@ -574,6 +698,7 @@ export function ImageryModal() {
     setSentinelError(null);
 
     try {
+      const scene = await fetchLatestSentinelScene(sentinelBbox, variant.id);
       const response = await fetch("/api/sentinel-image", {
         method: "POST",
         headers: {
@@ -582,6 +707,7 @@ export function ImageryModal() {
         body: JSON.stringify({
           bbox: sentinelBbox,
           date,
+          sceneDateTime: scene?.dateTime,
           variantId: variant.id,
           width: SENTINEL_RENDER_SIZE,
           height: SENTINEL_RENDER_SIZE,
@@ -606,6 +732,7 @@ export function ImageryModal() {
         imageUrl: URL.createObjectURL(blob),
         bbox: sentinelBbox,
         variantId: variant.id,
+        sceneDateTime: scene?.dateTime,
       });
       setSentinelVariantId(variant.id);
       setSentinelViewport({ scale: 1, x: 0, y: 0 });
@@ -826,7 +953,6 @@ export function ImageryModal() {
               <SentinelWorkspace
                 imageUrl={sentinelState.imageUrl}
                 bbox={sentinelState.bbox}
-                captureLabel={captureLabel}
                 onViewportChange={setSentinelViewport}
                 onPanCommit={(viewport) => void commitSentinelPan(viewport)}
               />
@@ -918,16 +1044,6 @@ export function ImageryModal() {
                 </div>
               </div>
             )}
-            {imageUrl && mode === "regional" && (
-              <div className="absolute left-3 top-3 rounded-md border border-white/10 bg-black/55 px-2 py-1 text-xs text-white/85 backdrop-blur">
-                {displayedImageLabel}
-              </div>
-            )}
-            {imageUrl && mode === "regional" && (
-              <div className="absolute right-3 top-3 max-w-[calc(100%-1.5rem)] rounded-md border border-white/10 bg-black/55 px-2 py-1 text-right text-xs text-white/85 backdrop-blur">
-                {captureLabel}
-              </div>
-            )}
             {error && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/80 p-8 text-center text-sm text-muted-foreground">
                 {error}
@@ -941,7 +1057,7 @@ export function ImageryModal() {
                 <MapPinned className="h-5 w-5 text-primary" />
                 {coordinates}
               </DialogTitle>
-              <DialogDescription>{formatLongDate(date)}</DialogDescription>
+              <DialogDescription>{captureLabel}</DialogDescription>
             </DialogHeader>
 
             <div className="rounded-md border border-border bg-background/45 p-4">

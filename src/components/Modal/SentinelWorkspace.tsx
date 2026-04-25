@@ -13,7 +13,6 @@ export type SentinelViewport = {
 type SentinelWorkspaceProps = {
   imageUrl: string;
   bbox: BoundingBox;
-  captureLabel: string;
   onViewportChange?: (viewport: SentinelViewport) => void;
   onPanCommit?: (viewport: SentinelViewport) => void;
 };
@@ -24,7 +23,6 @@ const MAX_SCALE = 8;
 export function SentinelWorkspace({
   imageUrl,
   bbox,
-  captureLabel,
   onViewportChange,
   onPanCommit,
 }: SentinelWorkspaceProps) {
@@ -157,12 +155,6 @@ export function SentinelWorkspace({
         }}
       />
 
-      <div className="absolute left-3 top-3 rounded-md border border-white/10 bg-black/60 px-2 py-1 text-xs text-white/85 backdrop-blur">
-        Sentinel-2 workspace
-      </div>
-      <div className="absolute right-3 top-3 rounded-md border border-white/10 bg-black/60 px-2 py-1 text-xs text-white/85 backdrop-blur">
-        {captureLabel}
-      </div>
       <div className="absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-2 rounded-md border border-white/10 bg-black/65 px-3 py-2 text-xs text-white/80 backdrop-blur">
         <span>{formatApproxDistance(Math.max(dimensions.width, dimensions.height) / 111)} view</span>
         <span>~{dimensions.pixelSizeMeters.toFixed(1)}m/px request</span>

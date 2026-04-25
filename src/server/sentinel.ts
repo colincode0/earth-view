@@ -20,6 +20,7 @@ type SentinelScenesRequest = {
   date: string;
   variantId?: string;
   limit?: number;
+  lookbackDays?: number;
 };
 
 type SentinelEnv = {
@@ -161,7 +162,8 @@ function validateScenesRequest(input: SentinelScenesRequest) {
     bbox: input.bbox,
     date: input.date,
     variantId: input.variantId,
-    limit: Math.min(20, Math.max(1, Math.round(input.limit ?? 7))),
+    limit: Math.min(30, Math.max(1, Math.round(input.limit ?? 7))),
+    lookbackDays: Math.min(1825, Math.max(1, Math.round(input.lookbackDays ?? 90))),
   };
 }
 
@@ -277,7 +279,7 @@ export async function fetchSentinelScenes(input: SentinelScenesRequest, env: Sen
       request.bbox.maxLon,
       request.bbox.maxLat,
     ],
-    datetime: catalogDateWindow(request.date, Math.max(45, variant.requestWindowDays * 3)),
+    datetime: catalogDateWindow(request.date, request.lookbackDays),
     limit: 100,
     fields: {
       include: ["id", "properties.datetime", "properties.eo:cloud_cover"],

@@ -3,13 +3,14 @@ import { Globe } from "@/components/Globe/Globe";
 import { CameraHotkeys } from "@/components/Globe/CameraHotkeys";
 import { MaxZoomImagery } from "@/components/Globe/MaxZoomImagery";
 import { ImageryModal } from "@/components/Modal/ImageryModal";
-import { formatImageryDateTime } from "@/lib/dates";
+import { formatGibsCaptureTime } from "@/lib/captureTime";
 import { getImageryProvider } from "@/providers/registry";
 import { useAppStore } from "@/store/useAppStore";
 
 export default function App() {
   const date = useAppStore((state) => state.date);
   const layerId = useAppStore((state) => state.layerId);
+  const globeView = useAppStore((state) => state.globeView);
   const provider = getImageryProvider(layerId);
 
   return (
@@ -28,7 +29,7 @@ export default function App() {
         <div className="min-w-0">
           <h1 className="truncate text-base font-semibold tracking-normal">Earth View</h1>
           <p className="truncate text-sm text-muted-foreground">
-            {provider.name} · {formatImageryDateTime(date)}
+            {provider.name} · {formatGibsCaptureTime(date, provider.id, globeView?.lon)}
           </p>
         </div>
       </header>
