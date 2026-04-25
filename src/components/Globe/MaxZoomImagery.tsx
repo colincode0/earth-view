@@ -1,5 +1,6 @@
 import { LoaderCircle, MapPinned } from "lucide-react";
 import { type MouseEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { cityLabels } from "@/lib/cities";
 import { bboxWidthKm, clamp, formatApproxDistance, formatCoordinates, normalizeLongitude } from "@/lib/geo";
 import { getImageryProvider } from "@/providers/registry";
 import { useAppStore } from "@/store/useAppStore";
@@ -54,6 +55,7 @@ export function MaxZoomImagery() {
   const globeView = useAppStore((state) => state.globeView);
   const date = useAppStore((state) => state.date);
   const layerId = useAppStore((state) => state.layerId);
+  const modalOpen = useAppStore((state) => state.modalOpen);
   const focusGlobeAt = useAppStore((state) => state.focusGlobeAt);
   const selectPoint = useAppStore((state) => state.selectPoint);
   const paneRef = useRef<HTMLDivElement>(null);
@@ -61,6 +63,7 @@ export function MaxZoomImagery() {
   const cacheScopeRef = useRef<string | null>(null);
   const visibleScopeRef = useRef<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [displayedBbox, setDisplayedBbox] = useState<BoundingBox | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -89,6 +92,20 @@ export function MaxZoomImagery() {
   const cacheScope = activeBbox
     ? `${date}|${imageWidth}x${imageHeight}|${activeBboxKey}`
     : "";
+  const labelBbox = displayedBbox ?? activeBbox;
+  const visibleCityLabels = useMemo(() => {
+    if (!labelBbox) {
+      return [];
+    }
+
+    return cityLabels.filter(
+      (city) =>
+        city.lat >= labelBbox.minLat &&
+        city.lat <= labelBbox.maxLat &&
+        city.lon >= labelBbox.minLon &&
+        city.lon <= labelBbox.maxLon,
+    );
+  }, [labelBbox]);
 
   useEffect(() => {
     function handleResize() {
@@ -119,6 +136,7 @@ export function MaxZoomImagery() {
 
     if (visibleScopeRef.current !== nextVisibleScope) {
       setImageUrl(null);
+      setDisplayedBbox(null);
       setPan({ x: 0, y: 0 });
       setCommittedPan({ x: 0, y: 0 });
       visibleScopeRef.current = nextVisibleScope;
@@ -132,6 +150,7 @@ export function MaxZoomImagery() {
 
     if (cachedImageUrl) {
       setImageUrl(cachedImageUrl);
+      setDisplayedBbox(activeBbox);
       setPan({ x: 0, y: 0 });
       setCommittedPan({ x: 0, y: 0 });
       setLoading(false);
@@ -140,8 +159,10 @@ export function MaxZoomImagery() {
       };
     }
 
+    const requestBbox = activeBbox;
+
     provider
-      .fetchImage({ bbox: activeBbox, date, width: imageWidth, height: imageHeight })
+      .fetchImage({ bbox: requestBbox, date, width: imageWidth, height: imageHeight })
       .then(async (result) => {
         if (cancelled) {
           return;
@@ -156,6 +177,7 @@ export function MaxZoomImagery() {
 
         imageCacheRef.current.set(cacheKey, nextImageUrl);
         setImageUrl(nextImageUrl);
+        setDisplayedBbox(requestBbox);
         setPan({ x: 0, y: 0 });
         setCommittedPan({ x: 0, y: 0 });
         setLoading(false);
@@ -223,19 +245,26 @@ export function MaxZoomImagery() {
   function pointFromImageClient(clientX: number, clientY: number) {
     const rect = paneRef.current?.getBoundingClientRect();
 
-    if (!rect || !activeBbox) {
+    const sourceBbox = displayedBbox ?? activeBbox;
+
+    if (!rect || !sourceBbox) {
       return null;
     }
 
     const x = clamp(clientX - rect.left - pan.x, 0, rect.width);
     const y = clamp(clientY - rect.top - pan.y, 0, rect.height);
-    const lonSpan = activeBbox.maxLon - activeBbox.minLon;
-    const latSpan = activeBbox.maxLat - activeBbox.minLat;
+    const lonSpan = sourceBbox.maxLon - sourceBbox.minLon;
+    const latSpan = sourceBbox.maxLat - sourceBbox.minLat;
 
     return {
-      lat: clamp(activeBbox.maxLat - (y / rect.height) * latSpan, -85, 85),
-      lon: normalizeLongitude(activeBbox.minLon + (x / rect.width) * lonSpan),
-      zoomDegrees: lonSpan,
+      lat: clamp(sourceBbox.maxLat - (y / rect.height) * latSpan, -85, 85),
+      lon: normalizeLongitude(sourceBbox.minLon + (x / rect.width) * lonSpan),
+      imageryView: {
+        latSpan,
+        lonSpan,
+        pixelWidth: rect.width,
+        pixelHeight: rect.height,
+      },
     };
   }
 
@@ -277,7 +306,7 @@ export function MaxZoomImagery() {
             const point = pointFromImageEvent(event);
 
             if (point) {
-              selectPoint(point.lat, point.lon, point.zoomDegrees);
+              selectPoint(point.lat, point.lon, point.imageryView);
             }
           }}
           onPointerDown={(event) => {
@@ -289,7 +318,7 @@ export function MaxZoomImagery() {
               const point = pointFromImageEvent(event);
 
               if (point) {
-                selectPoint(point.lat, point.lon, point.zoomDegrees);
+                selectPoint(point.lat, point.lon, point.imageryView);
               }
 
               return;
@@ -350,6 +379,31 @@ export function MaxZoomImagery() {
             setLoading(false);
           }}
         />
+      )}
+
+      {imageUrl && !modalOpen && labelBbox && visibleCityLabels.length > 0 && (
+        <div className="pointer-events-none absolute inset-0 z-[6]">
+          {visibleCityLabels.map((city) => {
+            const lonSpan = labelBbox.maxLon - labelBbox.minLon;
+            const latSpan = labelBbox.maxLat - labelBbox.minLat;
+            const left = ((city.lon - labelBbox.minLon) / lonSpan) * 100;
+            const top = ((labelBbox.maxLat - city.lat) / latSpan) * 100;
+
+            return (
+              <span
+                key={city.name}
+                className="city-label absolute"
+                style={{
+                  left: `calc(${left}% + ${pan.x}px)`,
+                  top: `calc(${top}% + ${pan.y}px)`,
+                  transform: "translate(-50%, -50%)",
+                }}
+              >
+                {city.name}
+              </span>
+            );
+          })}
+        </div>
       )}
 
       <div className="pointer-events-none absolute left-4 top-28 z-10 flex max-w-[calc(100vw-2rem)] flex-wrap items-center gap-2 rounded-md border border-white/10 bg-background/55 px-3 py-2 text-sm text-white/85 shadow-2xl backdrop-blur md:left-6">

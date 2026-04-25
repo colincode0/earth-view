@@ -1,5 +1,14 @@
 import { ArrowLeft, Film, LoaderCircle, MapPinned, Satellite, Sparkles } from "lucide-react";
-import { type PointerEvent, type WheelEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type PointerEvent,
+  type WheelEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -53,6 +62,15 @@ const TIME_LAPSE_SPEEDS = {
   30: 180,
 };
 
+function bboxFromSpans(lat: number, lon: number, latSpan: number, lonSpan: number): BoundingBox {
+  return {
+    minLat: clamp(lat - latSpan / 2, -85, 85),
+    maxLat: clamp(lat + latSpan / 2, -85, 85),
+    minLon: clamp(lon - lonSpan / 2, -180, 180),
+    maxLon: clamp(lon + lonSpan / 2, -180, 180),
+  };
+}
+
 export function ImageryModal() {
   const {
     selectedPoint,
@@ -66,9 +84,10 @@ export function ImageryModal() {
     setImageryZoomDegrees,
     recenterPoint,
   } = useAppStore();
-  const imagePaneRef = useRef<HTMLDivElement>(null);
+  const imagePaneRef = useRef<HTMLDivElement | null>(null);
   const wasModalOpenRef = useRef(false);
   const imageScopeRef = useRef<string | null>(null);
+  const [imagePaneNode, setImagePaneNode] = useState<HTMLDivElement | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,6 +111,9 @@ export function ImageryModal() {
   });
   const [regionalPan, setRegionalPan] = useState({ x: 0, y: 0 });
   const [committedRegionalPan, setCommittedRegionalPan] = useState({ x: 0, y: 0 });
+  const [imagePaneSize, setImagePaneSize] = useState<{ width: number; height: number } | null>(
+    null,
+  );
   const zoomCommitTimerRef = useRef<number | null>(null);
   const [regionalDragStart, setRegionalDragStart] = useState<{
     pointerId: number;
@@ -104,13 +126,85 @@ export function ImageryModal() {
   const provider = getImageryProvider(layerId);
   const selectedLat = selectedPoint?.lat;
   const selectedLon = selectedPoint?.lon;
+  const hasImageryView = Boolean(selectedPoint?.imageryView);
+  const setImagePaneRef = useCallback((node: HTMLDivElement | null) => {
+    imagePaneRef.current = node;
+    setImagePaneNode(node);
+  }, []);
   const bbox = useMemo(() => {
+    if (!selectedPoint) {
+      return null;
+    }
+
+    if (selectedPoint.imageryView) {
+      const paneSize = imagePaneSize ?? {
+        width: selectedPoint.imageryView.pixelWidth,
+        height: selectedPoint.imageryView.pixelHeight,
+      };
+
+      const zoomScale = imageryZoomDegrees / selectedPoint.imageryView.lonSpan;
+
+      return bboxFromSpans(
+        selectedPoint.lat,
+        selectedPoint.lon,
+        selectedPoint.imageryView.latSpan *
+          zoomScale *
+          (paneSize.height / selectedPoint.imageryView.pixelHeight),
+        selectedPoint.imageryView.lonSpan *
+          zoomScale *
+          (paneSize.width / selectedPoint.imageryView.pixelWidth),
+      );
+    }
+
+    return bboxFromPoint(selectedPoint.lat, selectedPoint.lon, imageryZoomDegrees);
+  }, [imagePaneSize, imageryZoomDegrees, selectedPoint]);
+  const fallbackBbox = useMemo(() => {
     if (!selectedPoint) {
       return null;
     }
 
     return bboxFromPoint(selectedPoint.lat, selectedPoint.lon, imageryZoomDegrees);
   }, [imageryZoomDegrees, selectedPoint]);
+  const regionalImageWidth = imagePaneSize
+    ? Math.min(1400, Math.max(768, Math.round(imagePaneSize.width)))
+    : 1024;
+  const regionalImageHeight = imagePaneSize
+    ? Math.min(1400, Math.max(768, Math.round(imagePaneSize.height)))
+    : 1024;
+
+  useLayoutEffect(() => {
+    if (!modalOpen) {
+      setImagePaneSize(null);
+      return;
+    }
+
+    if (!imagePaneNode) {
+      return;
+    }
+
+    const currentPane = imagePaneNode;
+
+    function updatePaneSize() {
+      const rect = currentPane.getBoundingClientRect();
+      const nextSize = {
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+
+      setImagePaneSize((previous) =>
+        previous?.width === nextSize.width && previous.height === nextSize.height
+          ? previous
+          : nextSize,
+      );
+    }
+
+    updatePaneSize();
+
+    const observer = new ResizeObserver(updatePaneSize);
+    observer.observe(currentPane);
+
+    return () => observer.disconnect();
+  }, [imagePaneNode, modalOpen]);
 
   function preloadImage(url: string) {
     return new Promise<void>((resolve, reject) => {
@@ -250,38 +344,77 @@ export function ImageryModal() {
     setSentinelError(null);
     setSentinelViewport({ scale: 1, x: 0, y: 0 });
 
-    provider
-      .fetchImage({ bbox, date, width: 1024, height: 1024 })
+    async function loadRegionalImage(requestBbox: BoundingBox) {
+      const result = await provider.fetchImage({
+        bbox: requestBbox,
+        date,
+        width: regionalImageWidth,
+        height: regionalImageHeight,
+      });
+      const nextImageUrl = typeof result === "string" ? result : URL.createObjectURL(result);
+      await preloadImage(nextImageUrl);
+
+      return nextImageUrl;
+    }
+
+    loadRegionalImage(bbox)
       .then(async (result) => {
         if (cancelled) {
           return;
         }
 
-        const nextImageUrl = typeof result === "string" ? result : URL.createObjectURL(result);
-        await preloadImage(nextImageUrl);
-
-        if (cancelled) {
-          return;
-        }
-
-        setImageUrl(nextImageUrl);
+        setImageUrl(result);
         setLoadedImageZoomDegrees(requestZoomDegrees);
         setPreviewZoomDegrees(requestZoomDegrees);
         setRegionalPan({ x: 0, y: 0 });
         setCommittedRegionalPan({ x: 0, y: 0 });
         setImageLoading(false);
       })
-      .catch(() => {
-        if (!cancelled) {
-          setError("Imagery unavailable for this selection.");
-          setImageLoading(false);
+      .catch(async () => {
+        if (!hasImageryView || !fallbackBbox) {
+          if (!cancelled) {
+            setError("Imagery unavailable for this selection.");
+            setImageLoading(false);
+          }
+
+          return;
+        }
+
+        try {
+          const fallbackImageUrl = await loadRegionalImage(fallbackBbox);
+
+          if (!cancelled) {
+            setImageUrl(fallbackImageUrl);
+            setLoadedImageZoomDegrees(requestZoomDegrees);
+            setPreviewZoomDegrees(requestZoomDegrees);
+            setRegionalPan({ x: 0, y: 0 });
+            setCommittedRegionalPan({ x: 0, y: 0 });
+            setImageLoading(false);
+          }
+        } catch {
+          if (!cancelled) {
+            setError("Imagery unavailable for this selection.");
+            setImageLoading(false);
+          }
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [bbox, date, imageryZoomDegrees, modalOpen, provider, selectedLat, selectedLon]);
+  }, [
+    bbox,
+    date,
+    fallbackBbox,
+    hasImageryView,
+    imageryZoomDegrees,
+    modalOpen,
+    provider,
+    regionalImageHeight,
+    regionalImageWidth,
+    selectedLat,
+    selectedLon,
+  ]);
 
   useEffect(() => {
     if (modalOpen && !wasModalOpenRef.current) {
@@ -629,7 +762,7 @@ export function ImageryModal() {
       <DialogContent data-testid="imagery-modal">
         <div className="grid max-h-[92dvh] grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_320px]">
           <div
-            ref={imagePaneRef}
+            ref={setImagePaneRef}
             className="relative min-h-[360px] overflow-hidden bg-black lg:min-h-[680px]"
           >
             {mode === "sentinel" && sentinelState ? (

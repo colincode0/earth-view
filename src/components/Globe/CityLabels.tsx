@@ -6,7 +6,7 @@ import { cityLabels } from "@/lib/cities";
 import { latLonToVector } from "@/lib/geo";
 import { useAppStore } from "@/store/useAppStore";
 
-const LABEL_RADIUS = 1.035;
+const LABEL_RADIUS = 1.008;
 const HORIZON_DOT_THRESHOLD = 0.22;
 
 function visibleTier(distance: number) {
@@ -23,6 +23,7 @@ function visibleTier(distance: number) {
 
 export function CityLabels() {
   const modalOpen = useAppStore((state) => state.modalOpen);
+  const atMaxZoom = useAppStore((state) => state.globeView?.atMaxZoom ?? false);
   const labelRefs = useRef<(HTMLSpanElement | null)[]>([]);
   const cameraDirectionRef = useRef(new Vector3());
   const labels = useMemo(
@@ -49,11 +50,12 @@ export function CityLabels() {
       }
 
       const isFacingCamera = city.normal.dot(cameraDirectionRef.current) > HORIZON_DOT_THRESHOLD;
-      label.style.display = !modalOpen && city.tier <= maxTier && isFacingCamera ? "block" : "none";
+      label.style.display =
+        !modalOpen && !atMaxZoom && city.tier <= maxTier && isFacingCamera ? "block" : "none";
     });
   });
 
-  if (modalOpen) {
+  if (modalOpen || atMaxZoom) {
     return null;
   }
 

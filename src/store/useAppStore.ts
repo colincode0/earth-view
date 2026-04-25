@@ -10,6 +10,14 @@ import {
 type SelectedPoint = {
   lat: number;
   lon: number;
+  imageryView?: ImageryView;
+};
+
+type ImageryView = {
+  latSpan: number;
+  lonSpan: number;
+  pixelWidth: number;
+  pixelHeight: number;
 };
 
 type GlobeView = {
@@ -38,7 +46,7 @@ type AppState = {
   dateManuallySelected: boolean;
   layerManuallySelected: boolean;
   imageryZoomDegrees: number;
-  selectPoint: (lat: number, lon: number, zoomDegrees?: number) => void;
+  selectPoint: (lat: number, lon: number, zoom?: number | ImageryView) => void;
   recenterPoint: (lat: number, lon: number) => void;
   setGlobeView: (view: GlobeView) => void;
   focusGlobeAt: (
@@ -64,12 +72,13 @@ export const useAppStore = create<AppState>((set) => ({
   dateManuallySelected: false,
   layerManuallySelected: false,
   imageryZoomDegrees: DEFAULT_IMAGERY_ZOOM_DEGREES,
-  selectPoint: (lat, lon, zoomDegrees) =>
+  selectPoint: (lat, lon, zoom) =>
     set((state) => {
       const latestTrueColorImagery = getLatestTrueColorImagery();
+      const zoomDegrees = typeof zoom === "number" ? zoom : zoom?.lonSpan;
 
       return {
-        selectedPoint: { lat, lon },
+        selectedPoint: { lat, lon, imageryView: typeof zoom === "object" ? zoom : undefined },
         modalOpen: true,
         date: state.dateManuallySelected ? state.date : latestTrueColorImagery.date,
         layerId: state.layerManuallySelected ? state.layerId : latestTrueColorImagery.layerId,
@@ -81,7 +90,16 @@ export const useAppStore = create<AppState>((set) => ({
             : clamp(zoomDegrees, IMAGERY_ZOOM_MIN_DEGREES, IMAGERY_ZOOM_MAX_DEGREES),
       };
     }),
-  recenterPoint: (lat, lon) => set({ selectedPoint: { lat, lon } }),
+  recenterPoint: (lat, lon) =>
+    set((state) => ({
+      selectedPoint: state.selectedPoint
+        ? {
+            ...state.selectedPoint,
+            lat,
+            lon,
+          }
+        : { lat, lon },
+    })),
   setGlobeView: (globeView) => set({ globeView }),
   focusGlobeAt: (lat, lon, options) =>
     set((state) => ({
