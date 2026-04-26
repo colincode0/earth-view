@@ -1,4 +1,4 @@
-import { LoaderCircle, Pause, Play, SkipBack, SkipForward } from "lucide-react";
+import { Download, LoaderCircle, Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { formatExactCaptureTime } from "@/lib/captureTime";
 import { formatLongDate } from "@/lib/dates";
+import { createAnimatedGif } from "@/lib/gif";
 
 export type TimeLapseFrame = {
   date: string;
@@ -21,10 +22,15 @@ type TimeLapseModalProps = {
   onOpenChange: (open: boolean) => void;
   frames: TimeLapseFrame[];
   loading: boolean;
+  loadingProgress?: {
+    loaded: number;
+    total: number;
+  } | null;
   error: string | null;
   title: string;
   frameCountLabel?: string;
   frameIntervalMs: number;
+  allowSequenceDownload?: boolean;
 };
 
 function formatFrameDate(value: string) {
@@ -40,15 +46,23 @@ export function TimeLapseModal({
   onOpenChange,
   frames,
   loading,
+  loadingProgress,
   error,
   title,
   frameCountLabel = "daily frames",
   frameIntervalMs,
+  allowSequenceDownload = false,
 }: TimeLapseModalProps) {
   const [frameIndex, setFrameIndex] = useState(0);
   const [playing, setPlaying] = useState(true);
+  const [exportingGif, setExportingGif] = useState(false);
   const frameCount = frames.length;
   const currentFrame = frames[frameIndex] ?? null;
+  const playbackReady = !loading && frameCount > 1;
+  const progressLabel =
+    loading && loadingProgress && loadingProgress.total > 0
+      ? `${loadingProgress.loaded}/${loadingProgress.total}`
+      : null;
 
   useEffect(() => {
     if (!open) {
@@ -60,7 +74,7 @@ export function TimeLapseModal({
   }, [open, frames]);
 
   useEffect(() => {
-    if (!open || !playing || frameCount <= 1) {
+    if (!open || !playing || !playbackReady) {
       return;
     }
 
@@ -69,7 +83,7 @@ export function TimeLapseModal({
     }, frameIntervalMs);
 
     return () => window.clearInterval(timer);
-  }, [frameCount, frameIntervalMs, open, playing]);
+  }, [frameCount, frameIntervalMs, open, playbackReady, playing]);
 
   function step(delta: number) {
     if (frameCount === 0) {
@@ -77,6 +91,33 @@ export function TimeLapseModal({
     }
 
     setFrameIndex((index) => (index + delta + frameCount) % frameCount);
+  }
+
+  async function downloadSequence() {
+    if (frameCount === 0 || exportingGif) {
+      return;
+    }
+
+    setExportingGif(true);
+
+    try {
+      const gif = await createAnimatedGif(
+        frames.map((frame) => ({
+          imageUrl: frame.imageUrl,
+          delayMs: frameIntervalMs,
+        })),
+      );
+      const url = URL.createObjectURL(gif);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}.gif`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExportingGif(false);
+    }
   }
 
   return (
@@ -120,9 +161,30 @@ export function TimeLapseModal({
             <DialogHeader className="pr-7">
               <DialogTitle>{title}</DialogTitle>
               <DialogDescription>
-                {frameCount > 0 ? `${frameCount} ${frameCountLabel}` : `Preparing ${frameCountLabel}`}
+                {progressLabel
+                  ? `${progressLabel} ${frameCountLabel}`
+                  : frameCount > 0
+                    ? `${frameCount} ${frameCountLabel}`
+                    : `Preparing ${frameCountLabel}`}
               </DialogDescription>
             </DialogHeader>
+
+            {allowSequenceDownload && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void downloadSequence()}
+                disabled={loading || exportingGif || frameCount === 0}
+                className="w-full"
+              >
+                {exportingGif ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                {exportingGif ? "Building GIF" : "Download sequence GIF"}
+              </Button>
+            )}
 
             <div className="flex items-center gap-2">
               <Button
@@ -139,7 +201,7 @@ export function TimeLapseModal({
                 type="button"
                 variant="secondary"
                 onClick={() => setPlaying((value) => !value)}
-                disabled={frameCount <= 1}
+                disabled={!playbackReady}
                 className="flex-1"
               >
                 {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
@@ -169,11 +231,22 @@ export function TimeLapseModal({
 
             <div className="rounded-md border border-border bg-background/45 p-3 text-sm text-muted-foreground">
               <div className="font-medium text-foreground">
-                {currentFrame ? formatFrameDate(currentFrame.date) : "No frame loaded"}
+                {currentFrame
+                  ? formatFrameDate(currentFrame.date)
+                  : progressLabel
+                    ? `${progressLabel} loaded`
+                    : "No frame loaded"}
               </div>
               <div className="mt-1">
-                {frameCount > 0 ? `Frame ${frameIndex + 1} of ${frameCount}` : "Waiting for imagery"}
+                {progressLabel
+                  ? `Loading ${progressLabel}`
+                  : frameCount > 0
+                    ? `Frame ${frameIndex + 1} of ${frameCount}`
+                    : "Waiting for imagery"}
               </div>
+              {progressLabel && frameCount === 0 && (
+                <div className="mt-1">Rendering Sentinel frames</div>
+              )}
               {error && currentFrame && <div className="mt-2 text-xs text-amber-300">{error}</div>}
             </div>
 

@@ -53,6 +53,7 @@ import { SentinelWorkspace, type SentinelViewport } from "./SentinelWorkspace";
 import { TimeLapseModal, type TimeLapseFrame } from "./TimeLapseModal";
 
 type ModalMode = "regional" | "sentinel";
+type TimeLapseMode = 7 | 30 | "5y";
 
 type SentinelState = {
   imageUrl: string;
@@ -70,9 +71,14 @@ type SentinelScene = {
 const SENTINEL_DEFAULT_SIZE_DEGREES = 0.09;
 const SENTINEL_RENDER_SIZE = 1024;
 const SENTINEL_SCENE_LOOKBACK_DAYS = 730;
+const SENTINEL_FIVE_YEAR_LOOKBACK_DAYS = 366;
+const SENTINEL_YEAR_SCENE_SAMPLE_SIZE = 6;
+const SENTINEL_YEAR_SCENE_SEARCH_LIMIT = 80;
+const SENTINEL_FRAME_CONCURRENCY = 5;
 const TIME_LAPSE_SPEEDS = {
   7: 650,
   30: 180,
+  "5y": 260,
 };
 
 type SentinelTimeLapseCacheValue = {
@@ -100,6 +106,49 @@ function sentinelTimeLapseBboxKey(bbox: BoundingBox) {
     .join(",");
 }
 
+function isoDateFromDate(value: Date) {
+  return value.toISOString().slice(0, 10);
+}
+
+function addUtcYears(value: Date, years: number) {
+  const next = new Date(value);
+  next.setUTCFullYear(next.getUTCFullYear() + years);
+  return next;
+}
+
+function selectEvenlySpacedScenes(scenes: SentinelScene[], count: number) {
+  const sortedScenes = scenes
+    .slice()
+    .sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
+
+  if (sortedScenes.length <= count) {
+    return sortedScenes;
+  }
+
+  const selectedScenes: SentinelScene[] = [];
+  const usedIndexes = new Set<number>();
+
+  for (let index = 0; index < count; index += 1) {
+    const targetIndex = Math.round((index * (sortedScenes.length - 1)) / (count - 1));
+    let nearestIndex = targetIndex;
+
+    while (usedIndexes.has(nearestIndex) && nearestIndex < sortedScenes.length - 1) {
+      nearestIndex += 1;
+    }
+
+    while (usedIndexes.has(nearestIndex) && nearestIndex > 0) {
+      nearestIndex -= 1;
+    }
+
+    usedIndexes.add(nearestIndex);
+    selectedScenes.push(sortedScenes[nearestIndex]);
+  }
+
+  return selectedScenes.sort(
+    (a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime(),
+  );
+}
+
 export function ImageryModal() {
   const {
     selectedPoint,
@@ -125,8 +174,12 @@ export function ImageryModal() {
   const [timeLapseOpen, setTimeLapseOpen] = useState(false);
   const [timeLapseFrames, setTimeLapseFrames] = useState<TimeLapseFrame[]>([]);
   const [timeLapseLoading, setTimeLapseLoading] = useState(false);
+  const [timeLapseLoadingProgress, setTimeLapseLoadingProgress] = useState<{
+    loaded: number;
+    total: number;
+  } | null>(null);
   const [timeLapseError, setTimeLapseError] = useState<string | null>(null);
-  const [timeLapseDays, setTimeLapseDays] = useState<7 | 30>(7);
+  const [timeLapseMode, setTimeLapseMode] = useState<TimeLapseMode>(7);
   const [previewZoomDegrees, setPreviewZoomDegrees] = useState(imageryZoomDegrees);
   const [loadedImageZoomDegrees, setLoadedImageZoomDegrees] = useState(imageryZoomDegrees);
   const [infoOpen, setInfoOpen] = useState(false);
@@ -252,10 +305,11 @@ export function ImageryModal() {
     }
 
     const frameDates = getRecentIsoDates(date, dayCount);
-    setTimeLapseDays(dayCount);
+    setTimeLapseMode(dayCount);
     setTimeLapseOpen(true);
     setTimeLapseFrames([]);
     setTimeLapseError(null);
+    setTimeLapseLoadingProgress(null);
     setTimeLapseLoading(true);
 
     const frames = await Promise.allSettled(
@@ -282,6 +336,7 @@ export function ImageryModal() {
 
     setTimeLapseFrames(loadedFrames);
     setTimeLapseLoading(false);
+    setTimeLapseLoadingProgress(null);
 
     if (loadedFrames.length === 0) {
       setTimeLapseError(`No imagery frames were available for this ${dayCount}-day view.`);
@@ -305,85 +360,98 @@ export function ImageryModal() {
     ].join("|");
   }
 
-  async function loadSentinelTimeLapse(dayCount: 7 | 30) {
+  async function fetchSentinelScenesForWindow(
+    sentinelBbox: BoundingBox,
+    variantId: string,
+    windowDate: string,
+    limit: number,
+    lookbackDays: number,
+  ) {
+    const scenesResponse = await fetch("/api/sentinel-scenes", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        bbox: sentinelBbox,
+        date: windowDate,
+        variantId,
+        limit,
+        lookbackDays,
+      }),
+    });
+
+    if (!scenesResponse.ok) {
+      let message = "Sentinel scene search failed.";
+
+      try {
+        const body = (await scenesResponse.json()) as { error?: string };
+        message = body.error ?? message;
+      } catch {
+        message = await scenesResponse.text();
+      }
+
+      throw new Error(message);
+    }
+
+    const { scenes } = (await scenesResponse.json()) as { scenes?: SentinelScene[] };
+    return scenes ?? [];
+  }
+
+  async function renderSentinelTimeLapseFrames(
+    scenes: SentinelScene[],
+    requestedCount: number,
+    cacheKey: string | null,
+  ) {
     if (!sentinelState) {
       return;
     }
 
     const variant = getSentinelVariant(sentinelState.variantId);
-    const cacheScope = getSentinelTimeLapseScope();
-    const cacheKey = cacheScope ? `${cacheScope}|${dayCount}` : null;
-    const cached = cacheKey ? sentinelTimeLapseCacheRef.current.get(cacheKey) : undefined;
+    const activeSentinelState = sentinelState;
+    const distinctScenes = scenes
+      .filter(
+        (scene, index, allScenes) =>
+          allScenes.findIndex((candidate) => candidate.dateTime === scene.dateTime) === index,
+      )
+      .sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
 
-    setTimeLapseDays(dayCount);
-    setTimeLapseOpen(true);
-
-    if (cached) {
-      setTimeLapseFrames(cached.frames);
-      setTimeLapseError(cached.error);
+    if (distinctScenes.length === 0) {
+      const nextError = `No distinct ${variant.name} scenes were found for this view.`;
+      setTimeLapseFrames([]);
       setTimeLapseLoading(false);
+      setTimeLapseLoadingProgress(null);
+      setTimeLapseError(nextError);
+
+      if (cacheKey) {
+        sentinelTimeLapseCacheRef.current.set(cacheKey, {
+          frames: [],
+          error: nextError,
+        });
+      }
+
       return;
     }
 
-    setTimeLapseFrames([]);
-    setTimeLapseError(null);
-    setTimeLapseLoading(true);
+    setTimeLapseLoadingProgress({ loaded: 0, total: distinctScenes.length });
 
-    try {
-      const scenesResponse = await fetch("/api/sentinel-scenes", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          bbox: sentinelState.bbox,
-          date,
-          variantId: variant.id,
-          limit: dayCount,
-          lookbackDays: SENTINEL_SCENE_LOOKBACK_DAYS,
-        }),
-      });
+    const loadedSceneFrames: TimeLapseFrame[] = [];
+    let completedSceneRequests = 0;
+    let nextSceneIndex = 0;
 
-      if (!scenesResponse.ok) {
-        let message = "Sentinel scene search failed.";
+    async function renderNextScene() {
+      while (nextSceneIndex < distinctScenes.length) {
+        const scene = distinctScenes[nextSceneIndex];
+        nextSceneIndex += 1;
 
         try {
-          const body = (await scenesResponse.json()) as { error?: string };
-          message = body.error ?? message;
-        } catch {
-          message = await scenesResponse.text();
-        }
-
-        throw new Error(message);
-      }
-
-      const { scenes } = (await scenesResponse.json()) as { scenes?: SentinelScene[] };
-      const distinctScenes = (scenes ?? [])
-        .slice()
-        .sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
-
-      if (distinctScenes.length === 0) {
-        setTimeLapseFrames([]);
-        setTimeLapseLoading(false);
-        setTimeLapseError(`No distinct ${variant.name} scenes were found for this view.`);
-        if (cacheKey) {
-          sentinelTimeLapseCacheRef.current.set(cacheKey, {
-            frames: [],
-            error: `No distinct ${variant.name} scenes were found for this view.`,
-          });
-        }
-        return;
-      }
-
-      const sceneFrames = await Promise.allSettled(
-        distinctScenes.map(async (scene) => {
           const response = await fetch("/api/sentinel-image", {
             method: "POST",
             headers: {
               "content-type": "application/json",
             },
             body: JSON.stringify({
-              bbox: sentinelState.bbox,
+              bbox: activeSentinelState.bbox,
               date,
               sceneDateTime: scene.dateTime,
               variantId: variant.id,
@@ -399,43 +467,156 @@ export function ImageryModal() {
           const imageUrl = URL.createObjectURL(await response.blob());
           await preloadImage(imageUrl);
 
-          return {
+          const frame = {
             date: scene.dateTime,
             imageUrl,
           };
-        }),
-      );
-      const loadedSceneFrames = sceneFrames
-        .filter(
-          (frame): frame is PromiseFulfilledResult<TimeLapseFrame> =>
-            frame.status === "fulfilled",
-        )
-        .map((frame) => frame.value);
 
-      setTimeLapseFrames(loadedSceneFrames);
+          loadedSceneFrames.push(frame);
+          loadedSceneFrames.sort(
+            (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+          );
+          setTimeLapseFrames([...loadedSceneFrames]);
+        } finally {
+          completedSceneRequests += 1;
+          setTimeLapseLoadingProgress({
+            loaded: completedSceneRequests,
+            total: distinctScenes.length,
+          });
+        }
+      }
+    }
+
+    await Promise.all(
+      Array.from(
+        { length: Math.min(SENTINEL_FRAME_CONCURRENCY, distinctScenes.length) },
+        renderNextScene,
+      ),
+    );
+
+    setTimeLapseFrames(loadedSceneFrames);
+    setTimeLapseLoading(false);
+    setTimeLapseLoadingProgress(null);
+
+    let nextError: string | null = null;
+
+    if (loadedSceneFrames.length === 0) {
+      nextError = `No ${variant.name} scene frames were available for this view.`;
+    } else if (loadedSceneFrames.length < distinctScenes.length) {
+      nextError = "Some Sentinel scene frames were unavailable, so the sequence is partial.";
+    } else if (loadedSceneFrames.length < requestedCount) {
+      nextError = `Only ${loadedSceneFrames.length} distinct scenes were found in the latest available imagery.`;
+    }
+
+    setTimeLapseError(nextError);
+
+    if (cacheKey) {
+      sentinelTimeLapseCacheRef.current.set(cacheKey, {
+        frames: loadedSceneFrames,
+        error: nextError,
+      });
+    }
+  }
+
+  async function loadSentinelTimeLapse(dayCount: 7 | 30) {
+    if (!sentinelState) {
+      return;
+    }
+
+    const variant = getSentinelVariant(sentinelState.variantId);
+    const cacheScope = getSentinelTimeLapseScope();
+    const cacheKey = cacheScope ? `${cacheScope}|${dayCount}` : null;
+    const cached = cacheKey ? sentinelTimeLapseCacheRef.current.get(cacheKey) : undefined;
+
+    setTimeLapseMode(dayCount);
+    setTimeLapseOpen(true);
+
+    if (cached) {
+      setTimeLapseFrames(cached.frames);
+      setTimeLapseError(cached.error);
       setTimeLapseLoading(false);
+      setTimeLapseLoadingProgress(null);
+      return;
+    }
 
-      let nextError: string | null = null;
+    setTimeLapseFrames([]);
+    setTimeLapseError(null);
+    setTimeLapseLoadingProgress(null);
+    setTimeLapseLoading(true);
 
-      if (loadedSceneFrames.length === 0) {
-        nextError = `No ${variant.name} scene frames were available for this view.`;
-      } else if (loadedSceneFrames.length < distinctScenes.length) {
-        nextError = "Some Sentinel scene frames were unavailable, so the sequence is partial.";
-      } else if (loadedSceneFrames.length < dayCount) {
-        nextError = `Only ${loadedSceneFrames.length} distinct scenes were found in the latest available imagery.`;
-      }
-
-      setTimeLapseError(nextError);
-
-      if (cacheKey) {
-        sentinelTimeLapseCacheRef.current.set(cacheKey, {
-          frames: loadedSceneFrames,
-          error: nextError,
-        });
-      }
+    try {
+      const scenes = await fetchSentinelScenesForWindow(
+        sentinelState.bbox,
+        variant.id,
+        date,
+        dayCount,
+        SENTINEL_SCENE_LOOKBACK_DAYS,
+      );
+      await renderSentinelTimeLapseFrames(scenes, dayCount, cacheKey);
     } catch (sceneError) {
       setTimeLapseFrames([]);
       setTimeLapseLoading(false);
+      setTimeLapseLoadingProgress(null);
+      setTimeLapseError(
+        sceneError instanceof Error ? sceneError.message : "Sentinel scene search failed.",
+      );
+    }
+  }
+
+  async function loadSentinelFiveYearTimeLapse() {
+    if (!sentinelState) {
+      return;
+    }
+
+    const variant = getSentinelVariant(sentinelState.variantId);
+    const cacheScope = getSentinelTimeLapseScope();
+    const cacheKey = cacheScope ? `${cacheScope}|5y` : null;
+    const cached = cacheKey ? sentinelTimeLapseCacheRef.current.get(cacheKey) : undefined;
+
+    setTimeLapseMode("5y");
+    setTimeLapseOpen(true);
+
+    if (cached) {
+      setTimeLapseFrames(cached.frames);
+      setTimeLapseError(cached.error);
+      setTimeLapseLoading(false);
+      setTimeLapseLoadingProgress(null);
+      return;
+    }
+
+    setTimeLapseFrames([]);
+    setTimeLapseError(null);
+    setTimeLapseLoadingProgress(null);
+    setTimeLapseLoading(true);
+
+    try {
+      const endDate = new Date(`${date}T23:59:59Z`);
+      const selectedScenes: SentinelScene[] = [];
+
+      for (let index = 4; index >= 0; index -= 1) {
+        const windowEndDate = addUtcYears(endDate, -index);
+        const scenes = await fetchSentinelScenesForWindow(
+          sentinelState.bbox,
+          variant.id,
+          isoDateFromDate(windowEndDate),
+          SENTINEL_YEAR_SCENE_SEARCH_LIMIT,
+          SENTINEL_FIVE_YEAR_LOOKBACK_DAYS,
+        );
+
+        selectedScenes.push(
+          ...selectEvenlySpacedScenes(scenes, SENTINEL_YEAR_SCENE_SAMPLE_SIZE),
+        );
+      }
+
+      await renderSentinelTimeLapseFrames(
+        selectedScenes,
+        SENTINEL_YEAR_SCENE_SAMPLE_SIZE * 5,
+        cacheKey,
+      );
+    } catch (sceneError) {
+      setTimeLapseFrames([]);
+      setTimeLapseLoading(false);
+      setTimeLapseLoadingProgress(null);
       setTimeLapseError(
         sceneError instanceof Error ? sceneError.message : "Sentinel scene search failed.",
       );
@@ -1119,7 +1300,7 @@ export function ImageryModal() {
                     disabled={timeLapseLoading || !sentinelState}
                     className="w-full"
                   >
-                    {timeLapseLoading && timeLapseDays === 7 ? (
+                    {timeLapseLoading && timeLapseMode === 7 ? (
                       <LoaderCircle className="h-4 w-4 animate-spin" />
                     ) : (
                       <Film className="h-4 w-4" />
@@ -1133,7 +1314,7 @@ export function ImageryModal() {
                     disabled={timeLapseLoading || !sentinelState}
                     className="w-full"
                   >
-                    {timeLapseLoading && timeLapseDays === 30 ? (
+                    {timeLapseLoading && timeLapseMode === 30 ? (
                       <LoaderCircle className="h-4 w-4 animate-spin" />
                     ) : (
                       <Film className="h-4 w-4" />
@@ -1141,6 +1322,21 @@ export function ImageryModal() {
                     30 scenes
                   </Button>
                 </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void loadSentinelFiveYearTimeLapse()}
+                  disabled={timeLapseLoading || !sentinelState}
+                  className="w-full"
+                >
+                  {timeLapseLoading && timeLapseMode === "5y" ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Film className="h-4 w-4" />
+                  )}
+                  Last 5 years
+                </Button>
 
                 <Button
                   type="button"
@@ -1202,7 +1398,7 @@ export function ImageryModal() {
                     disabled={timeLapseLoading || !bbox}
                     className="w-full"
                   >
-                    {timeLapseLoading && timeLapseDays === 7 ? (
+                    {timeLapseLoading && timeLapseMode === 7 ? (
                       <LoaderCircle className="h-4 w-4 animate-spin" />
                     ) : (
                       <Film className="h-4 w-4" />
@@ -1216,7 +1412,7 @@ export function ImageryModal() {
                     disabled={timeLapseLoading || !bbox}
                     className="w-full"
                   >
-                    {timeLapseLoading && timeLapseDays === 30 ? (
+                    {timeLapseLoading && timeLapseMode === 30 ? (
                       <LoaderCircle className="h-4 w-4 animate-spin" />
                     ) : (
                       <Film className="h-4 w-4" />
@@ -1242,14 +1438,18 @@ export function ImageryModal() {
         onOpenChange={setTimeLapseOpen}
         frames={timeLapseFrames}
         loading={timeLapseLoading}
+        loadingProgress={timeLapseLoadingProgress}
         error={timeLapseError}
         title={
           mode === "sentinel"
-            ? `${renderedSentinelVariant.name} · ${timeLapseDays} scenes`
-            : `${provider.name} · ${timeLapseDays} days`
+            ? `${renderedSentinelVariant.name} · ${
+                timeLapseMode === "5y" ? "Last 5 years" : `${timeLapseMode} scenes`
+              }`
+            : `${provider.name} · ${timeLapseMode} days`
         }
         frameCountLabel={mode === "sentinel" ? "scene frames" : undefined}
-        frameIntervalMs={TIME_LAPSE_SPEEDS[timeLapseDays]}
+        frameIntervalMs={TIME_LAPSE_SPEEDS[timeLapseMode]}
+        allowSequenceDownload={mode === "sentinel"}
       />
     </Dialog>
   );
