@@ -8,6 +8,7 @@ export type BoundingBox = {
 export type ImageryRequest = {
   bbox: BoundingBox;
   date: string;
+  sceneDateTime?: string;
   width: number;
   height: number;
 };
@@ -25,5 +26,7 @@ export interface ImageryProvider {
   caveat: string;
   loadingMessage?: string;
   sentinelVariantId?: string;
+  overlayOnly?: boolean;
+  fixedDate?: string;
   fetchImage(params: ImageryRequest): Promise<string | Blob>;
 }

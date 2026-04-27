@@ -29,6 +29,43 @@ const GIBS_CAPTURE_TIMING: Record<string, CaptureTiming> = {
   "viirs-noaa20-swir": {
     localSolarMinutes: 13 * 60 + 25,
   },
+  "viirs-black-marble": {
+    localSolarMinutes: 1 * 60 + 30,
+    note: "annual nighttime composite",
+  },
+  "modis-aod": {
+    localSolarMinutes: 12 * 60,
+    note: "Terra + Aqua daily product",
+  },
+  "modis-cloud-top-temp": {
+    localSolarMinutes: 10 * 60 + 30,
+  },
+  "amsr2-precipitable-water": {
+    localSolarMinutes: 13 * 60 + 30,
+    note: "AMSR2 ascending pass",
+  },
+  "ghrsst-sst": {
+    localSolarMinutes: 12 * 60,
+    note: "daily L4 composite",
+  },
+  "modis-chlorophyll": {
+    localSolarMinutes: 13 * 60 + 30,
+  },
+  "modis-snow-cover": {
+    localSolarMinutes: 10 * 60 + 30,
+  },
+  "amsr2-sea-ice": {
+    localSolarMinutes: 13 * 60 + 30,
+    note: "AMSR2 daily product",
+  },
+  "viirs-noaa20-fires": {
+    localSolarMinutes: 13 * 60 + 25,
+    note: "VIIRS daytime thermal pass",
+  },
+  "modis-fires": {
+    localSolarMinutes: 12 * 60,
+    note: "Terra + Aqua combined thermal anomalies",
+  },
 };
 
 const SENTINEL_CAPTURE_TIMING: Record<string, CaptureTiming> = {
@@ -63,6 +100,16 @@ export function formatExactCaptureTime(value: string) {
     day: "numeric",
     year: "numeric",
   }).format(date)} · ${formatBrowserLocalTime(date)}`;
+}
+
+export function formatSceneAcquisition(scene: {
+  dateTime: string;
+  cloudCover: number | null;
+}) {
+  const cloudSuffix =
+    typeof scene.cloudCover === "number" ? ` · ${Math.round(scene.cloudCover)}% cloud` : "";
+
+  return `${formatExactCaptureTime(scene.dateTime)}${cloudSuffix}`;
 }
 
 function formatLocalSolarTime(totalMinutes: number) {

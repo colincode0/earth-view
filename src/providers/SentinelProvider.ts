@@ -47,6 +47,7 @@ export class SentinelProvider implements ImageryProvider {
       body: JSON.stringify({
         bbox: params.bbox,
         date: params.date,
+        sceneDateTime: params.sceneDateTime,
         variantId: this.sentinelVariantId,
         width: params.width,
         height: params.height,

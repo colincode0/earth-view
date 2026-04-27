@@ -1,14 +1,19 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { LoaderCircle } from "lucide-react";
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useRef, useState } from "react";
 import { Raycaster, Sphere, Vector2, Vector3 } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { buildGlobalGibsTextureUrl } from "@/providers/GibsProvider";
 import { getImageryProvider } from "@/providers/registry";
 import { useAppStore } from "@/store/useAppStore";
 import { latLonToVector, normalizeLongitude, pointToLatLon } from "@/lib/geo";
-import { Earth } from "./Earth";
+import { BoundaryLines } from "./BoundaryLines";
+import { CityLabels } from "./CityLabels";
+import { Earth, PlaceholderEarth } from "./Earth";
+import { EarthquakeMarkers } from "./EventOverlays/EarthquakeMarkers";
+import { StormTracks } from "./EventOverlays/StormTracks";
+import { VolcanoMarkers } from "./EventOverlays/VolcanoMarkers";
 import { Starfield } from "./Starfield";
 
 const MIN_GLOBE_DISTANCE = 1.06;
@@ -137,20 +142,30 @@ function AdaptiveControls() {
 export function Globe() {
   const date = useAppStore((state) => state.date);
   const layerId = useAppStore((state) => state.layerId);
+  const overlayLayerIds = useAppStore((state) => state.overlayLayerIds);
+  const activityOverlays = useAppStore((state) => state.activityOverlays);
   const selectPoint = useAppStore((state) => state.selectPoint);
   const provider = getImageryProvider(layerId);
   const globeProvider = provider.layerId ? provider : getImageryProvider("viirs-noaa20");
-  const textureUrl = buildGlobalGibsTextureUrl(globeProvider.layerId ?? "", date);
-  const [loadingTextureUrl, setLoadingTextureUrl] = useState(textureUrl);
-  const globeLoading = loadingTextureUrl === textureUrl;
+  const baseDate = globeProvider.fixedDate ?? date;
+  const textureUrl = buildGlobalGibsTextureUrl(globeProvider.layerId ?? "", baseDate);
+  const overlayTextures = overlayLayerIds
+    .map((id) => {
+      const overlay = getImageryProvider(id);
+      if (!overlay.layerId) return null;
+      const overlayDate = overlay.fixedDate ?? date;
+      return {
+        id,
+        url: buildGlobalGibsTextureUrl(overlay.layerId, overlayDate, { transparent: true }),
+      };
+    })
+    .filter((entry): entry is { id: string; url: string } => entry !== null);
+  const [loadedTextureUrl, setLoadedTextureUrl] = useState<string | null>(null);
+  const globeLoading = loadedTextureUrl !== textureUrl;
 
-  useEffect(() => {
-    setLoadingTextureUrl(textureUrl);
-  }, [textureUrl]);
-
-  const handleEarthReady = useCallback(() => {
-    setLoadingTextureUrl((current) => (current === textureUrl ? "" : current));
-  }, [textureUrl]);
+  const handleEarthReady = useCallback((url: string) => {
+    setLoadedTextureUrl(url);
+  }, []);
 
   return (
     <div className="absolute inset-0" data-testid="globe-stage">
@@ -164,16 +179,26 @@ export function Globe() {
         <directionalLight position={[4, 2.8, 2.2]} intensity={1.8} />
         <directionalLight position={[-3, -1.8, -3]} intensity={0.2} color="#ffffff" />
         <Starfield />
-        <Suspense fallback={null}>
-          <Earth textureUrl={textureUrl} onSelect={selectPoint} onReady={handleEarthReady} />
+        <Suspense fallback={<PlaceholderEarth onSelect={selectPoint} />}>
+          <Earth
+            textureUrl={textureUrl}
+            overlayTextures={overlayTextures}
+            onSelect={selectPoint}
+            onReady={handleEarthReady}
+          />
         </Suspense>
+        <BoundaryLines />
+        <CityLabels />
+        {activityOverlays.earthquakes ? <EarthquakeMarkers /> : null}
+        {activityOverlays.volcanoes ? <VolcanoMarkers /> : null}
+        {activityOverlays.storms ? <StormTracks /> : null}
         <AdaptiveControls />
       </Canvas>
       {globeLoading && (
-        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-background/15 backdrop-blur-[1px]">
+        <div className="pointer-events-none absolute bottom-6 left-1/2 z-10 -translate-x-1/2">
           <div className="flex items-center gap-2 rounded-md border border-white/10 bg-background/75 px-3 py-2 text-sm text-foreground shadow-xl backdrop-blur">
             <LoaderCircle className="h-4 w-4 animate-spin text-primary" />
-            Loading globe
+            Loading globe imagery
           </div>
         </div>
       )}

@@ -36,6 +36,8 @@ type GlobeFocusRequest = {
   nonce: number;
 };
 
+export type ActivityOverlayKey = "earthquakes" | "volcanoes" | "storms";
+
 type AppState = {
   selectedPoint: SelectedPoint | null;
   globeView: GlobeView | null;
@@ -43,6 +45,8 @@ type AppState = {
   modalOpen: boolean;
   date: string;
   layerId: string;
+  overlayLayerIds: string[];
+  activityOverlays: Record<ActivityOverlayKey, boolean>;
   dateManuallySelected: boolean;
   layerManuallySelected: boolean;
   imageryZoomDegrees: number;
@@ -57,6 +61,11 @@ type AppState = {
   closeModal: () => void;
   setDate: (date: string) => void;
   setLayer: (id: string) => void;
+  addOverlayLayer: (id: string) => void;
+  removeOverlayLayer: (id: string) => void;
+  moveOverlayLayer: (id: string, direction: "up" | "down") => void;
+  clearOverlayLayers: () => void;
+  toggleActivityOverlay: (key: ActivityOverlayKey) => void;
   setImageryZoomDegrees: (degrees: number) => void;
 };
 
@@ -69,6 +78,8 @@ export const useAppStore = create<AppState>((set) => ({
   modalOpen: false,
   date: initialTrueColorImagery.date,
   layerId: initialTrueColorImagery.layerId,
+  overlayLayerIds: [],
+  activityOverlays: { earthquakes: false, volcanoes: false, storms: false },
   dateManuallySelected: false,
   layerManuallySelected: false,
   imageryZoomDegrees: DEFAULT_IMAGERY_ZOOM_DEGREES,
@@ -119,6 +130,37 @@ export const useAppStore = create<AppState>((set) => ({
     })),
   closeModal: () => set({ modalOpen: false }),
   setDate: (date) => set({ date, dateManuallySelected: true }),
-  setLayer: (layerId) => set({ layerId, layerManuallySelected: true }),
+  setLayer: (layerId) =>
+    set((state) => ({
+      layerId,
+      layerManuallySelected: true,
+      overlayLayerIds: state.overlayLayerIds.filter((id) => id !== layerId),
+    })),
+  addOverlayLayer: (id) =>
+    set((state) => {
+      if (id === state.layerId || state.overlayLayerIds.includes(id)) {
+        return state;
+      }
+      return { overlayLayerIds: [...state.overlayLayerIds, id] };
+    }),
+  removeOverlayLayer: (id) =>
+    set((state) => ({
+      overlayLayerIds: state.overlayLayerIds.filter((existing) => existing !== id),
+    })),
+  moveOverlayLayer: (id, direction) =>
+    set((state) => {
+      const index = state.overlayLayerIds.indexOf(id);
+      if (index < 0) return state;
+      const target = direction === "up" ? index - 1 : index + 1;
+      if (target < 0 || target >= state.overlayLayerIds.length) return state;
+      const next = [...state.overlayLayerIds];
+      [next[index], next[target]] = [next[target], next[index]];
+      return { overlayLayerIds: next };
+    }),
+  clearOverlayLayers: () => set({ overlayLayerIds: [] }),
+  toggleActivityOverlay: (key) =>
+    set((state) => ({
+      activityOverlays: { ...state.activityOverlays, [key]: !state.activityOverlays[key] },
+    })),
   setImageryZoomDegrees: (imageryZoomDegrees) => set({ imageryZoomDegrees }),
 }));

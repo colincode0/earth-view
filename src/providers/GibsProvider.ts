@@ -12,6 +12,8 @@ type GibsLayerConfig = {
   summary: string;
   bestFor: string;
   caveat: string;
+  overlayOnly?: boolean;
+  fixedDate?: string;
 };
 
 function bboxParam(bbox: BoundingBox) {
@@ -20,7 +22,11 @@ function bboxParam(bbox: BoundingBox) {
     .join(",");
 }
 
-export function buildGibsWmsUrl(layerId: string, params: ImageryRequest) {
+export function buildGibsWmsUrl(
+  layerId: string,
+  params: ImageryRequest,
+  options?: { transparent?: boolean },
+) {
   const search = new URLSearchParams({
     SERVICE: "WMS",
     REQUEST: "GetMap",
@@ -32,24 +38,33 @@ export function buildGibsWmsUrl(layerId: string, params: ImageryRequest) {
     HEIGHT: String(params.height),
     BBOX: bboxParam(params.bbox),
     FORMAT: "image/png",
-    TRANSPARENT: "FALSE",
+    TRANSPARENT: options?.transparent ? "TRUE" : "FALSE",
   });
 
   return `${GIBS_WMS_URL}?${search.toString()}`;
 }
 
-export function buildGlobalGibsTextureUrl(layerId: string, date: string, width = 4096) {
-  return buildGibsWmsUrl(layerId, {
-    date,
-    width,
-    height: width / 2,
-    bbox: {
-      minLat: -90,
-      minLon: -180,
-      maxLat: 90,
-      maxLon: 180,
+export function buildGlobalGibsTextureUrl(
+  layerId: string,
+  date: string,
+  options?: { transparent?: boolean; width?: number },
+) {
+  const width = options?.width ?? 4096;
+  return buildGibsWmsUrl(
+    layerId,
+    {
+      date,
+      width,
+      height: width / 2,
+      bbox: {
+        minLat: -90,
+        minLon: -180,
+        maxLat: 90,
+        maxLon: 180,
+      },
     },
-  });
+    { transparent: options?.transparent },
+  );
 }
 
 export class GibsProvider implements ImageryProvider {
@@ -65,6 +80,8 @@ export class GibsProvider implements ImageryProvider {
   requiresAuth = false;
   loadingMessage?: string;
   sentinelVariantId?: string;
+  overlayOnly: boolean;
+  fixedDate?: string;
 
   constructor(config: GibsLayerConfig) {
     this.id = config.id;
@@ -76,9 +93,15 @@ export class GibsProvider implements ImageryProvider {
     this.summary = config.summary;
     this.bestFor = config.bestFor;
     this.caveat = config.caveat;
+    this.overlayOnly = config.overlayOnly ?? false;
+    this.fixedDate = config.fixedDate;
+  }
+
+  resolveDate(date: string) {
+    return this.fixedDate ?? date;
   }
 
   async fetchImage(params: ImageryRequest) {
-    return buildGibsWmsUrl(this.layerId, params);
+    return buildGibsWmsUrl(this.layerId, { ...params, date: this.resolveDate(params.date) });
   }
 }

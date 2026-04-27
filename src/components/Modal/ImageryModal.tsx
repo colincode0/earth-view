@@ -17,8 +17,10 @@ import {
 } from "@/components/ui/select";
 import { formatCoordinates } from "@/lib/geo";
 import {
+  formatExactCaptureTime,
   formatGibsCaptureTime,
   formatSentinelCaptureTime,
+  formatSceneAcquisition,
 } from "@/lib/captureTime";
 import { getImageryProvider, modalImageryProviders } from "@/providers/registry";
 import { useAppStore } from "@/store/useAppStore";
@@ -145,8 +147,14 @@ export function ImageryModal() {
     ? formatCoordinates(selectedPoint.lat, selectedPoint.lon)
     : "";
   const regionalCaptureLabel = formatGibsCaptureTime(date, provider.id, selectedLon);
+  const acquiredScenes = regionalImagery.acquiredScenes;
+  const mostRecentSceneTime = acquiredScenes[0]?.dateTime ?? null;
   const regionalProviderCaptureLabel = provider.sentinelVariantId
-    ? formatSentinelCaptureTime(date, provider.sentinelVariantId, selectedLon)
+    ? mostRecentSceneTime
+      ? acquiredScenes.length > 1
+        ? `${formatExactCaptureTime(mostRecentSceneTime)} · ${acquiredScenes.length} scene mosaic`
+        : formatExactCaptureTime(mostRecentSceneTime)
+      : formatSentinelCaptureTime(date, provider.sentinelVariantId, selectedLon)
     : regionalCaptureLabel;
   const captureLabel = regionalProviderCaptureLabel;
   const askViewContext: AskViewContext | null = selectedPoint
@@ -303,6 +311,20 @@ export function ImageryModal() {
                   provider.requiresAuth ? " · Copernicus" : ""
                 }`}
               </div>
+              {isRegionalSentinel && acquiredScenes.length > 1 && (
+                <div className="mt-3 border-t border-border/60 pt-3">
+                  <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Scenes in mosaic
+                  </div>
+                  <ul className="space-y-1 text-xs text-muted-foreground">
+                    {acquiredScenes.map((scene) => (
+                      <li key={scene.dateTime} className="font-mono">
+                        {formatSceneAcquisition(scene)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
 
             <>

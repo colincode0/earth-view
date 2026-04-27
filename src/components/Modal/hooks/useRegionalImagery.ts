@@ -15,12 +15,33 @@ import {
   normalizeLongitude,
   zoomPercentToDegrees,
 } from "@/lib/geo";
+import { getSentinelVariant } from "@/lib/sentinelVariants";
 import type { ImageryProvider } from "@/types/imagery";
 import {
   bboxFromSpans,
   preloadImage,
 } from "./imageryModalHelpers";
 import type { ManagedObjectUrl } from "./types";
+
+export type SceneAcquisition = {
+  dateTime: string;
+  cloudCover: number | null;
+};
+
+type CachedRegionalImage = {
+  imageUrl: string;
+  scenes: SceneAcquisition[];
+};
+
+type SentinelSceneResponse = {
+  scenes?: Array<{
+    dateTime: string;
+    cloudCover?: number | null;
+  }>;
+  error?: string;
+};
+
+const REGIONAL_SCENES_LIMIT = 30;
 
 function imageryErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Imagery unavailable for this selection.";
@@ -78,12 +99,13 @@ export function useRegionalImagery({
   createObjectUrl,
 }: RegionalImageryOptions) {
   const imageScopeRef = useRef<string | null>(null);
-  const imageCacheRef = useRef(new Map<string, string>());
+  const imageCacheRef = useRef(new Map<string, CachedRegionalImage>());
   const wasModalOpenRef = useRef(false);
   const zoomCommitTimerRef = useRef<number | null>(null);
   const imageUrlRef = useRef<string | null>(null);
   const updateReasonRef = useRef<"positioning" | "resolution" | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [acquiredScenes, setAcquiredScenes] = useState<SceneAcquisition[]>([]);
   const [imageLoading, setImageLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewZoomDegrees, setPreviewZoomDegrees] = useState(imageryZoomDegrees);
@@ -144,9 +166,10 @@ export function useRegionalImagery({
     : 1024;
   const imagePreviewScale = loadedImageZoomDegrees / previewZoomDegrees;
 
-  const setManagedImageUrl = useCallback((url: string | null) => {
-    imageUrlRef.current = url;
-    setImageUrl(url);
+  const setManagedImage = useCallback((image: CachedRegionalImage | null) => {
+    imageUrlRef.current = image?.imageUrl ?? null;
+    setImageUrl(image?.imageUrl ?? null);
+    setAcquiredScenes(image?.scenes ?? []);
   }, []);
 
   const setManagedUpdateReason = useCallback((reason: "positioning" | "resolution" | null) => {
@@ -182,7 +205,7 @@ export function useRegionalImagery({
 
     if (imageScopeRef.current !== nextImageScope) {
       if (!shouldPreserveImageWhileLoading && !cachedImageUrl) {
-        setManagedImageUrl(null);
+        setManagedImage(null);
         setRegionalPan({ x: 0, y: 0 });
         setCommittedRegionalPan({ x: 0, y: 0 });
       }
@@ -191,7 +214,7 @@ export function useRegionalImagery({
     }
 
     if (cachedImageUrl) {
-      setManagedImageUrl(cachedImageUrl);
+      setManagedImage(cachedImageUrl);
       setLoadedImageZoomDegrees(requestZoomDegrees);
       setPreviewZoomDegrees(requestZoomDegrees);
       setRegionalPan({ x: 0, y: 0 });
@@ -207,17 +230,60 @@ export function useRegionalImagery({
     setError(null);
     setRegionalDragStart(null);
 
-    async function loadRegionalImage(requestBbox: NonNullable<typeof bbox>) {
-      const result = await provider.fetchImage({
-        bbox: requestBbox,
-        date,
-        width: regionalImageWidth,
-        height: regionalImageHeight,
+    async function resolveContributingScenes(
+      requestBbox: NonNullable<typeof bbox>,
+    ): Promise<SceneAcquisition[]> {
+      if (!provider.sentinelVariantId) {
+        return [];
+      }
+
+      const variant = getSentinelVariant(provider.sentinelVariantId);
+      const response = await fetch("/api/sentinel-scenes", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          bbox: requestBbox,
+          date,
+          variantId: variant.id,
+          limit: REGIONAL_SCENES_LIMIT,
+          lookbackDays: variant.requestWindowDays,
+        }),
       });
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const body = (await response.json()) as SentinelSceneResponse;
+      return (body.scenes ?? [])
+        .filter((scene): scene is { dateTime: string; cloudCover?: number | null } =>
+          Boolean(scene.dateTime),
+        )
+        .map((scene) => ({
+          dateTime: scene.dateTime,
+          cloudCover: scene.cloudCover ?? null,
+        }));
+    }
+
+    async function loadRegionalImage(requestBbox: NonNullable<typeof bbox>) {
+      const [result, scenes] = await Promise.all([
+        provider.fetchImage({
+          bbox: requestBbox,
+          date,
+          width: regionalImageWidth,
+          height: regionalImageHeight,
+        }),
+        resolveContributingScenes(requestBbox).catch(() => [] as SceneAcquisition[]),
+      ]);
       const nextImageUrl = typeof result === "string" ? result : createObjectUrl(result);
       await preloadImage(nextImageUrl);
 
-      return nextImageUrl;
+      return {
+        imageUrl: nextImageUrl,
+        scenes,
+      };
     }
 
     loadRegionalImage(bbox)
@@ -226,7 +292,7 @@ export function useRegionalImagery({
           return;
         }
 
-        setManagedImageUrl(result);
+        setManagedImage(result);
         imageCacheRef.current.set(cacheKey, result);
         setLoadedImageZoomDegrees(requestZoomDegrees);
         setPreviewZoomDegrees(requestZoomDegrees);
@@ -250,7 +316,7 @@ export function useRegionalImagery({
           const fallbackImageUrl = await loadRegionalImage(fallbackBbox);
 
           if (!cancelled) {
-            setManagedImageUrl(fallbackImageUrl);
+            setManagedImage(fallbackImageUrl);
             imageCacheRef.current.set(cacheKey, fallbackImageUrl);
             setLoadedImageZoomDegrees(requestZoomDegrees);
             setPreviewZoomDegrees(requestZoomDegrees);
@@ -284,7 +350,7 @@ export function useRegionalImagery({
     regionalImageWidth,
     selectedLat,
     selectedLon,
-    setManagedImageUrl,
+    setManagedImage,
     setManagedUpdateReason,
   ]);
 
@@ -378,6 +444,7 @@ export function useRegionalImagery({
 
   return {
     bbox,
+    acquiredScenes,
     imagePreviewScale,
     imageUrl,
     imageLoading,
