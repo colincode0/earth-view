@@ -142,6 +142,7 @@ function AdaptiveControls() {
 export function Globe() {
   const date = useAppStore((state) => state.date);
   const layerId = useAppStore((state) => state.layerId);
+  const imageryVisible = useAppStore((state) => state.imageryVisible);
   const overlayLayerIds = useAppStore((state) => state.overlayLayerIds);
   const activityOverlays = useAppStore((state) => state.activityOverlays);
   const selectPoint = useAppStore((state) => state.selectPoint);
@@ -181,6 +182,7 @@ export function Globe() {
         <Starfield />
         <Suspense fallback={<PlaceholderEarth onSelect={selectPoint} />}>
           <Earth
+            imageryVisible={imageryVisible}
             textureUrl={textureUrl}
             overlayTextures={overlayTextures}
             onSelect={selectPoint}
@@ -194,7 +196,7 @@ export function Globe() {
         {activityOverlays.storms ? <StormTracks /> : null}
         <AdaptiveControls />
       </Canvas>
-      {globeLoading && (
+      {imageryVisible && globeLoading && (
         <div className="pointer-events-none absolute bottom-6 left-1/2 z-10 -translate-x-1/2">
           <div className="flex items-center gap-2 rounded-md border border-white/10 bg-background/75 px-3 py-2 text-sm text-foreground shadow-xl backdrop-blur">
             <LoaderCircle className="h-4 w-4 animate-spin text-primary" />

@@ -6,6 +6,7 @@ import { pointToLatLon } from "@/lib/geo";
 type OverlayTexture = { id: string; url: string };
 
 type EarthProps = {
+  imageryVisible: boolean;
   textureUrl: string;
   overlayTextures?: OverlayTexture[];
   overlayOpacity?: number;
@@ -105,6 +106,7 @@ export function PlaceholderEarth({ onSelect }: SelectHandlers) {
 }
 
 export function Earth({
+  imageryVisible,
   textureUrl,
   overlayTextures,
   overlayOpacity = 0.75,
@@ -120,16 +122,13 @@ export function Earth({
 
   return (
     <group>
-      <mesh onClick={handleClick} onContextMenu={handleContextMenu} castShadow receiveShadow>
+      <mesh onClick={handleClick} onContextMenu={handleContextMenu}>
         <sphereGeometry args={[1, 128, 128]} />
-        <meshStandardMaterial
-          map={texture}
-          color="#b7c8cb"
-          emissive="#071115"
-          emissiveIntensity={0.35}
-          roughness={0.9}
-          metalness={0}
-        />
+        {imageryVisible ? (
+          <meshBasicMaterial key="imagery" map={texture} />
+        ) : (
+          <meshBasicMaterial key="hidden-imagery" colorWrite={false} depthWrite />
+        )}
       </mesh>
       {overlayTextures?.map((overlay, index) => (
         <Suspense key={overlay.id} fallback={null}>

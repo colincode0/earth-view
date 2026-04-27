@@ -1,4 +1,15 @@
-import { Activity, ChevronDown, ChevronUp, Flame, Layers, Mountain, Wind, X } from "lucide-react";
+import {
+  Activity,
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  EyeOff,
+  Flame,
+  Layers,
+  Mountain,
+  Wind,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo } from "react";
 import { getImageryProvider, imageryProviders } from "@/providers/registry";
 import { type ActivityOverlayKey, useAppStore } from "@/store/useAppStore";
@@ -24,10 +35,12 @@ function isTypingTarget(target: EventTarget | null) {
 
 export function CameraHotkeys() {
   const layerId = useAppStore((state) => state.layerId);
+  const imageryVisible = useAppStore((state) => state.imageryVisible);
   const overlayLayerIds = useAppStore((state) => state.overlayLayerIds);
   const modalOpen = useAppStore((state) => state.modalOpen);
   const atMaxZoom = useAppStore((state) => state.globeView?.atMaxZoom ?? false);
   const setLayer = useAppStore((state) => state.setLayer);
+  const toggleImageryVisible = useAppStore((state) => state.toggleImageryVisible);
   const addOverlayLayer = useAppStore((state) => state.addOverlayLayer);
   const removeOverlayLayer = useAppStore((state) => state.removeOverlayLayer);
   const moveOverlayLayer = useAppStore((state) => state.moveOverlayLayer);
@@ -80,9 +93,24 @@ export function CameraHotkeys() {
     <aside className="pointer-events-auto absolute right-4 top-1/2 z-10 flex max-h-[calc(100vh-2rem)] w-[min(220px,calc(100vw-2rem))] -translate-y-1/2 flex-col overflow-y-auto overscroll-contain rounded-lg border border-white/10 bg-background/60 p-2.5 shadow-2xl backdrop-blur md:right-6">
       <div className="mb-1.5 flex items-baseline justify-between gap-3">
         <h2 className="text-xs font-semibold tracking-normal text-foreground">Imagery</h2>
-        <span className="text-[11px] text-muted-foreground">
-          1-{Math.min(9, visibleProviders.length)}
-        </span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-muted-foreground">
+            1-{Math.min(9, visibleProviders.length)}
+          </span>
+          <button
+            type="button"
+            onClick={toggleImageryVisible}
+            className={`inline-flex h-5 w-5 items-center justify-center rounded-sm border transition-colors ${
+              imageryVisible
+                ? "border-primary/60 bg-primary/20 text-foreground"
+                : "border-white/10 bg-background/50 text-muted-foreground hover:text-foreground"
+            }`}
+            aria-label={imageryVisible ? "Hide base imagery" : "Show base imagery"}
+            title={imageryVisible ? "Hide base imagery" : "Show base imagery"}
+          >
+            {imageryVisible ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+          </button>
+        </div>
       </div>
       <div className="space-y-0.5">
         {visibleProviders.map((provider, index) => {

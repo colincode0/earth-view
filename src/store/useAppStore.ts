@@ -45,6 +45,7 @@ type AppState = {
   modalOpen: boolean;
   date: string;
   layerId: string;
+  imageryVisible: boolean;
   overlayLayerIds: string[];
   activityOverlays: Record<ActivityOverlayKey, boolean>;
   dateManuallySelected: boolean;
@@ -61,6 +62,7 @@ type AppState = {
   closeModal: () => void;
   setDate: (date: string) => void;
   setLayer: (id: string) => void;
+  toggleImageryVisible: () => void;
   addOverlayLayer: (id: string) => void;
   removeOverlayLayer: (id: string) => void;
   moveOverlayLayer: (id: string, direction: "up" | "down") => void;
@@ -78,6 +80,7 @@ export const useAppStore = create<AppState>((set) => ({
   modalOpen: false,
   date: initialTrueColorImagery.date,
   layerId: initialTrueColorImagery.layerId,
+  imageryVisible: true,
   overlayLayerIds: [],
   activityOverlays: { earthquakes: false, volcanoes: false, storms: false },
   dateManuallySelected: false,
@@ -135,6 +138,10 @@ export const useAppStore = create<AppState>((set) => ({
       layerId,
       layerManuallySelected: true,
       overlayLayerIds: state.overlayLayerIds.filter((id) => id !== layerId),
+    })),
+  toggleImageryVisible: () =>
+    set((state) => ({
+      imageryVisible: !state.imageryVisible,
     })),
   addOverlayLayer: (id) =>
     set((state) => {

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { latLonToVector } from "@/lib/geo";
+import { ActivityCrosshair } from "./ActivityCrosshair";
 import { fetchJsonCached } from "./eventFetch";
 
 const EONET_VOLCANOES_URL =
   "https://eonet.gsfc.nasa.gov/api/v3/events?category=volcanoes&status=open&limit=100";
 const TTL_MS = 30 * 60 * 1000;
 const MARKER_RADIUS = 1.012;
-const MARKER_SIZE = 0.0085;
 
 type EonetGeometry = {
   date: string;
@@ -85,10 +85,7 @@ export function VolcanoMarkers() {
   return (
     <group>
       {markers.map((marker) => (
-        <mesh key={marker.id} position={marker.position}>
-          <sphereGeometry args={[MARKER_SIZE, 12, 12]} />
-          <meshBasicMaterial color="#ff6b35" transparent opacity={0.95} />
-        </mesh>
+        <ActivityCrosshair key={marker.id} color="#ff6b35" position={marker.position} />
       ))}
     </group>
   );

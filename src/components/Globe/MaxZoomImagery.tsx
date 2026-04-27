@@ -71,6 +71,7 @@ export function MaxZoomImagery() {
   const globeView = useAppStore((state) => state.globeView);
   const date = useAppStore((state) => state.date);
   const layerId = useAppStore((state) => state.layerId);
+  const imageryVisible = useAppStore((state) => state.imageryVisible);
   const modalOpen = useAppStore((state) => state.modalOpen);
   const focusGlobeAt = useAppStore((state) => state.focusGlobeAt);
   const selectPoint = useAppStore((state) => state.selectPoint);
@@ -96,7 +97,7 @@ export function MaxZoomImagery() {
   const updatingMessage = provider.loadingMessage
     ? `Updating. ${provider.loadingMessage}`
     : "Updating";
-  const isVisible = Boolean(globeView?.atMaxZoom && !isSuppressed);
+  const isVisible = Boolean(imageryVisible && globeView?.atMaxZoom && !isSuppressed);
   const aspect = viewportSize.width / Math.max(viewportSize.height, 1);
   const bbox = useMemo(() => {
     if (!globeView) {

@@ -7,8 +7,10 @@ The app is intentionally exploratory: orbit the planet, zoom into a region, choo
 ## What It Does
 
 - Renders an interactive 3D globe with NASA GIBS WMS imagery wrapped onto a Three.js sphere.
-- Supports daily MODIS and VIIRS true-color and false-color layers plus regional Sentinel-2 optical and Sentinel-1 radar layers.
+- Supports daily MODIS and VIIRS true-color and false-color base layers, NASA GIBS analytic overlays, and regional Sentinel-2 optical and Sentinel-1 radar layers.
 - Shows country borders, state/province boundaries, graticule lines, and tiered city labels.
+- Adds optional global overlays for aerosols, cloud-top temperature, precipitable water, sea surface temperature, chlorophyll, snow cover, sea ice, and active fires.
+- Adds optional activity overlays for recent USGS earthquakes and open NASA EONET volcano and severe-storm events.
 - Switches into a higher-detail 2D imagery overlay when the camera reaches max zoom.
 - Opens a regional imagery modal from shift-click or right-click selection.
 - Supports date selection, layer switching, pan/zoom, and 7-day or 30-day regional time lapses.
@@ -29,8 +31,20 @@ The default imagery providers use NASA GIBS WMS:
 - VIIRS SNPP SWIR false color
 - VIIRS SNPP cloud/snow false color
 - VIIRS NOAA-20 SWIR false color
+- VIIRS Black Marble night lights
+- MODIS aerosol optical depth
+- MODIS cloud top temperature
+- AMSR2 precipitable water
+- GHRSST sea surface temperature
+- MODIS chlorophyll-a
+- MODIS snow cover
+- AMSR2 sea ice concentration
+- VIIRS active fires
+- MODIS active fires
 
-These layers are treated as one complete global frame per day. The app defaults to the latest likely complete true-color day, with a small lag to avoid requesting incomplete current-day imagery.
+The main true-color and false-color GIBS layers can be used as globe base layers. The analytic GIBS products are registered as translucent overlays that can be stacked over the current base imagery. Some products are pinned to a fixed latest useful date in code when the public GIBS archive does not currently extend to today.
+
+Most GIBS layers are treated as one complete global frame per day. The app defaults to the latest likely complete VIIRS NOAA-20 true-color day, with a small UTC lag to avoid requesting incomplete current-day imagery.
 
 The regional imagery provider list also includes Copernicus Sentinel layers rendered through the local/API Sentinel handler. These layers use the same regional bbox, drag, and zoom workflow as the NASA layers, but they require Copernicus credentials and represent the latest available scene near the selected date rather than a global daily GIBS frame.
 
@@ -44,6 +58,17 @@ The regional Sentinel layers use Copernicus Data Space / Sentinel Hub APIs throu
 - Sentinel-1 radar
 
 Sentinel requests require API credentials. Without credentials, the NASA GIBS globe and regional views still work, but Sentinel rendering and Sentinel scene searches will return a configuration error.
+
+### Event And Boundary Overlays
+
+The globe fetches supporting context directly in the browser:
+
+- Natural Earth country and admin-1 boundary GeoJSON, with fallback URLs
+- USGS all-day earthquake GeoJSON, filtered to magnitude 2.5 and above
+- NASA EONET open volcano events
+- NASA EONET open severe-storm events, rendered as tracks when point history is available
+
+These overlays are optional UI toggles. If a feed fails, the corresponding overlay simply renders no markers.
 
 ### AI View Analysis
 
@@ -120,11 +145,13 @@ npm run lint     # Run ESLint
 
 - Drag the globe to rotate Earth.
 - Scroll or pinch to zoom.
-- Use the imagery panel or number keys to switch available NASA GIBS and regional Sentinel layers.
-- Sentinel layers only appear in the globe hotkey panel at max zoom; all regional layers are available in the modal layer switcher, with Sentinel listed first.
+- Use the imagery panel or number keys to switch available base layers.
+- Add GIBS analytic overlays from the overlay selector, reorder them, remove them, or clear the overlay stack.
+- Toggle activity overlays for earthquakes, volcanoes, and storms.
+- Sentinel layers only appear in the globe imagery panel at max zoom; all regional layers are available in the modal layer switcher, with Sentinel listed first.
 - At max zoom, the app replaces the globe view with a higher-detail WMS image for the current viewport.
 - Shift-click or right-click the globe or max-zoom image to select a point and open the imagery modal.
-- In the regional modal, drag to pan, scroll to zoom, change the date, switch layers, or build 7-day and 30-day time lapses.
+- In the regional modal, drag to pan, scroll to zoom, shift-click to recenter, change the date, switch layers, or build 7-day and 30-day time lapses.
 - For Sentinel layers, the time-lapse controls search and render scene sequences, including a five-year sampled comparison and GIF export.
 - To use AI analysis, choose OpenAI or Anthropic, optionally describe what to focus on, then click "Ask about this view." Follow-up questions stay scoped to that chat session and the captured view context.
 
@@ -175,9 +202,11 @@ npm run lint     # Run ESLint
 
 ### Rendering Flow
 
-`src/components/Globe/Globe.tsx` owns the Three.js canvas. It builds a global NASA GIBS texture URL for globe-capable providers, renders the Earth sphere, and reports camera-derived viewport information back to the Zustand store. Regional-only Sentinel providers keep the globe on the default global true-color texture while the regional modal renders the selected Sentinel layer.
+`src/components/Globe/Globe.tsx` owns the Three.js canvas. It builds a global NASA GIBS texture URL for globe-capable providers, renders the Earth sphere, applies optional transparent GIBS overlay textures, mounts boundary/city/event overlays, and reports camera-derived viewport information back to the Zustand store. Regional-only Sentinel providers keep the globe on a default global true-color texture while the regional modal renders the selected Sentinel layer.
 
 `src/components/Globe/MaxZoomImagery.tsx` listens for max-zoom globe state. When the camera is close enough, it requests a WMS image for the visible bounding box and presents it as a 2D overlay. This allows clearer local inspection than stretching the global sphere texture.
+
+`src/components/Globe/CameraHotkeys.tsx` owns the floating imagery panel, number-key layer switching, GIBS overlay stack controls, and activity overlay toggles.
 
 ### Selection And Modal State
 
@@ -186,6 +215,8 @@ npm run lint     # Run ESLint
 - selected coordinates
 - current globe viewport
 - active imagery layer
+- active GIBS overlay layers
+- activity overlay toggles
 - selected date
 - modal open/closed state
 - imagery zoom level
@@ -197,7 +228,7 @@ npm run lint     # Run ESLint
 
 ### Imagery Providers
 
-Regional imagery follows a provider interface in `src/types/imagery.ts`. `GibsProvider` implements that interface by producing WMS `GetMap` URLs. `SentinelProvider` implements the same interface by requesting Sentinel imagery through the server/API layer. The registry in `src/providers/registry.ts` is the main place to add, remove, or reorder regional layers.
+Regional imagery follows a provider interface in `src/types/imagery.ts`. `GibsProvider` implements that interface by producing WMS `GetMap` URLs and can be marked `overlayOnly` for analytic products that should stack over a base layer. `SentinelProvider` implements the same interface by requesting Sentinel imagery through the server/API layer. The registry in `src/providers/registry.ts` is the main place to add, remove, or reorder base, overlay, and regional layers.
 
 Sentinel imagery is modeled separately in `src/lib/sentinelVariants.ts` because each layer needs a Copernicus collection, resolution, request window, and evalscript.
 
@@ -249,6 +280,12 @@ For a NASA GIBS WMS layer:
 2. Set the GIBS `layerId`, display metadata, satellite, category, nominal resolution, and caveats.
 3. The layer automatically appears in the globe hotkey panel, modal layer switcher, and imagery info dialog.
 
+For a NASA GIBS overlay:
+
+1. Add a new `GibsProvider` entry in `src/providers/registry.ts`.
+2. Set `overlayOnly: true` so it appears in the overlay selector instead of the base-layer list.
+3. Use `fixedDate` when a product has a known archive end date that should override the selected app date.
+
 For a Sentinel layer:
 
 1. Add a new entry in `src/lib/sentinelVariants.ts`.
@@ -265,8 +302,8 @@ For a regional Sentinel provider:
 
 The app is a Vite SPA with serverless-style Sentinel and AI endpoints. The static build is produced by `npm run build`; deployment environments must also provide Sentinel credentials if Sentinel rendering should work and AI provider keys if Ask View should work.
 
-NASA GIBS imagery and external boundary GeoJSON are fetched directly by the browser. Sentinel and AI credentials are never sent to the browser; they are read only by the server/API layer.
+NASA GIBS imagery, boundary GeoJSON, USGS earthquakes, and NASA EONET event feeds are fetched directly by the browser. Sentinel and AI credentials are never sent to the browser; they are read only by the server/API layer.
 
 ## Current Notes
 
-`NOTES.md` contains short working notes and possible follow-up tasks. It is not required for running the app, but it is useful project context for current UX ideas around Sentinel date behavior, AI analysis, and future imagery workflows.
+`NOTES.md` contains short working notes and possible follow-up tasks. It is not required for running the app, but it is useful project context for current ideas around AIS ship tracks, OPERA/ASF Sentinel-1 RTC products, and Sentinel mosaic scene highlighting.

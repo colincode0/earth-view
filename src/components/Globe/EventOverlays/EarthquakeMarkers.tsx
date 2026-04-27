@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { latLonToVector } from "@/lib/geo";
+import { ActivityCrosshair } from "./ActivityCrosshair";
 import { fetchJsonCached } from "./eventFetch";
 
 const USGS_FEED_URL =
@@ -24,8 +25,8 @@ type Quake = {
   magnitude: number;
 };
 
-function magnitudeToScale(magnitude: number) {
-  return 0.004 + Math.max(0, magnitude) * 0.0035;
+function magnitudeToSizeMultiplier(magnitude: number) {
+  return 0.85 + Math.max(0, Math.min(7, magnitude)) * 0.08;
 }
 
 function magnitudeToColor(magnitude: number) {
@@ -71,7 +72,7 @@ export function EarthquakeMarkers() {
         return {
           ...quake,
           position: [position.x, position.y, position.z] as [number, number, number],
-          scale: magnitudeToScale(quake.magnitude),
+          sizeMultiplier: magnitudeToSizeMultiplier(quake.magnitude),
           color: magnitudeToColor(quake.magnitude),
         };
       }),
@@ -81,10 +82,12 @@ export function EarthquakeMarkers() {
   return (
     <group>
       {markers.map((marker) => (
-        <mesh key={marker.id} position={marker.position}>
-          <sphereGeometry args={[marker.scale, 12, 12]} />
-          <meshBasicMaterial color={marker.color} transparent opacity={0.9} />
-        </mesh>
+        <ActivityCrosshair
+          key={marker.id}
+          color={marker.color}
+          position={marker.position}
+          sizeMultiplier={marker.sizeMultiplier}
+        />
       ))}
     </group>
   );

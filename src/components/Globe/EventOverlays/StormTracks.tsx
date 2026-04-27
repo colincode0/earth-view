@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { BufferGeometry, Float32BufferAttribute } from "three";
 import { latLonToVector } from "@/lib/geo";
+import { ActivityCrosshair } from "./ActivityCrosshair";
 import { fetchJsonCached } from "./eventFetch";
 
 const EONET_STORMS_URL =
@@ -8,7 +9,6 @@ const EONET_STORMS_URL =
 const TTL_MS = 15 * 60 * 1000;
 const TRACK_RADIUS = 1.01;
 const HEAD_RADIUS = 1.013;
-const HEAD_SIZE = 0.009;
 
 type EonetGeometry = {
   date: string;
@@ -117,10 +117,7 @@ export function StormTracks() {
         <lineBasicMaterial color="#5ac8fa" transparent opacity={0.85} />
       </lineSegments>
       {heads.map((head) => (
-        <mesh key={head.id} position={head.position}>
-          <sphereGeometry args={[HEAD_SIZE, 12, 12]} />
-          <meshBasicMaterial color="#5ac8fa" transparent opacity={0.95} />
-        </mesh>
+        <ActivityCrosshair key={head.id} color="#5ac8fa" position={head.position} />
       ))}
     </group>
   );
