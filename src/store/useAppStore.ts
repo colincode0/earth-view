@@ -36,6 +36,14 @@ type GlobeFocusRequest = {
   nonce: number;
 };
 
+type ModalReturnState = {
+  date: string;
+  layerId: string;
+  dateManuallySelected: boolean;
+  layerManuallySelected: boolean;
+  overlayLayerIds: string[];
+};
+
 export type ActivityOverlayKey = "earthquakes" | "volcanoes" | "storms";
 
 type AppState = {
@@ -43,6 +51,7 @@ type AppState = {
   globeView: GlobeView | null;
   globeFocusRequest: GlobeFocusRequest | null;
   modalOpen: boolean;
+  modalReturnState: ModalReturnState | null;
   date: string;
   layerId: string;
   imageryVisible: boolean;
@@ -78,6 +87,7 @@ export const useAppStore = create<AppState>((set) => ({
   globeView: null,
   globeFocusRequest: null,
   modalOpen: false,
+  modalReturnState: null,
   date: initialTrueColorImagery.date,
   layerId: initialTrueColorImagery.layerId,
   imageryVisible: true,
@@ -94,6 +104,15 @@ export const useAppStore = create<AppState>((set) => ({
       return {
         selectedPoint: { lat, lon, imageryView: typeof zoom === "object" ? zoom : undefined },
         modalOpen: true,
+        modalReturnState: state.modalOpen
+          ? state.modalReturnState
+          : {
+              date: state.date,
+              layerId: state.layerId,
+              dateManuallySelected: state.dateManuallySelected,
+              layerManuallySelected: state.layerManuallySelected,
+              overlayLayerIds: state.overlayLayerIds,
+            },
         date: state.dateManuallySelected ? state.date : latestTrueColorImagery.date,
         layerId: state.layerManuallySelected ? state.layerId : latestTrueColorImagery.layerId,
         imageryZoomDegrees:
@@ -131,7 +150,22 @@ export const useAppStore = create<AppState>((set) => ({
           }
         : state.globeView,
     })),
-  closeModal: () => set({ modalOpen: false }),
+  closeModal: () =>
+    set((state) => {
+      if (!state.modalReturnState) {
+        return { modalOpen: false };
+      }
+
+      return {
+        modalOpen: false,
+        date: state.modalReturnState.date,
+        layerId: state.modalReturnState.layerId,
+        dateManuallySelected: state.modalReturnState.dateManuallySelected,
+        layerManuallySelected: state.modalReturnState.layerManuallySelected,
+        overlayLayerIds: state.modalReturnState.overlayLayerIds,
+        modalReturnState: null,
+      };
+    }),
   setDate: (date) => set({ date, dateManuallySelected: true }),
   setLayer: (layerId) =>
     set((state) => ({

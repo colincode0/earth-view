@@ -47,6 +47,12 @@
     font-weight: 200;
   }
 
+  body.map-dragging-modal,
+  body.map-dragging-modal * {
+    cursor: grabbing !important;
+    user-select: none !important;
+  }
+
   button,
   input,
   select,

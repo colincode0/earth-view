@@ -37,6 +37,8 @@ import { AskViewModal, type AskProvider, type AskViewContext } from "./AskViewMo
 import { LayerSwitcher } from "./LayerSwitcher";
 import { TimeLapseModal } from "./TimeLapseModal";
 
+const ASK_VIEW_VISIBLE = false;
+
 function viewSignature(context: AskViewContext | null, imageUrl: string | null) {
   if (!context || !imageUrl) {
     return "";
@@ -143,6 +145,14 @@ export function ImageryModal() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [modalOpen, setLayer]);
 
+  useEffect(() => {
+    document.body.classList.toggle("map-dragging-modal", Boolean(regionalImagery.regionalDragStart));
+
+    return () => {
+      document.body.classList.remove("map-dragging-modal");
+    };
+  }, [regionalImagery.regionalDragStart]);
+
   const coordinates = selectedPoint
     ? formatCoordinates(selectedPoint.lat, selectedPoint.lon)
     : "";
@@ -193,7 +203,55 @@ export function ImageryModal() {
         <div className="grid max-h-[92dvh] grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_320px]">
           <div
             ref={setImagePaneRef}
-            className="relative min-h-[360px] overflow-hidden bg-black lg:min-h-[680px]"
+            className="relative min-h-[360px] cursor-grab select-none overflow-hidden bg-black touch-none active:cursor-grabbing lg:min-h-[680px]"
+            onWheel={regionalImagery.zoomRegionalImage}
+            onPointerDown={(event) => {
+              if (event.shiftKey) {
+                const point = regionalImagery.pointFromRegionalEvent(event);
+
+                if (point) {
+                  recenterPoint(point.lat, point.lon);
+                }
+
+                return;
+              }
+
+              event.currentTarget.setPointerCapture(event.pointerId);
+              regionalImagery.startRegionalDrag({
+                pointerId: event.pointerId,
+                x: event.clientX,
+                y: event.clientY,
+                originX: regionalImagery.committedRegionalPan.x,
+                originY: regionalImagery.committedRegionalPan.y,
+              });
+            }}
+            onPointerMove={(event) => {
+              if (
+                !regionalImagery.regionalDragStart ||
+                regionalImagery.regionalDragStart.pointerId !== event.pointerId
+              ) {
+                return;
+              }
+
+              regionalImagery.setRegionalPan({
+                x: regionalImagery.regionalDragStart.originX + event.clientX - regionalImagery.regionalDragStart.x,
+                y: regionalImagery.regionalDragStart.originY + event.clientY - regionalImagery.regionalDragStart.y,
+              });
+            }}
+            onPointerUp={(event) => {
+              const nextPan = regionalImagery.regionalDragStart
+                ? {
+                    x: regionalImagery.regionalDragStart.originX + event.clientX - regionalImagery.regionalDragStart.x,
+                    y: regionalImagery.regionalDragStart.originY + event.clientY - regionalImagery.regionalDragStart.y,
+                  }
+                : regionalImagery.regionalPan;
+
+              regionalImagery.setRegionalDragStart(null);
+              regionalImagery.commitRegionalPan(nextPan);
+            }}
+            onPointerCancel={() => {
+              regionalImagery.cancelRegionalDrag();
+            }}
           >
             {regionalImagery.imageUrl ? (
               <img
@@ -202,7 +260,7 @@ export function ImageryModal() {
                 alt=""
                 data-testid="gibs-image"
                 draggable={false}
-                className="h-full w-full cursor-grab select-none object-cover active:cursor-grabbing"
+                className="pointer-events-none h-full w-full select-none object-cover"
                 style={{
                   transform: `translate(${regionalImagery.regionalPan.x}px, ${regionalImagery.regionalPan.y}px) scale(${regionalImagery.imagePreviewScale})`,
                   transformOrigin: "center",
@@ -210,55 +268,6 @@ export function ImageryModal() {
                     regionalImagery.regionalDragStart || regionalImagery.imageLoading
                       ? "none"
                       : "transform 160ms ease-out",
-                }}
-                onWheel={regionalImagery.zoomRegionalImage}
-                onPointerDown={(event) => {
-                  if (event.shiftKey) {
-                    const point = regionalImagery.pointFromRegionalEvent(event);
-
-                    if (point) {
-                      recenterPoint(point.lat, point.lon);
-                    }
-
-                    return;
-                  }
-
-                  event.currentTarget.setPointerCapture(event.pointerId);
-                  regionalImagery.setRegionalDragStart({
-                    pointerId: event.pointerId,
-                    x: event.clientX,
-                    y: event.clientY,
-                    originX: regionalImagery.committedRegionalPan.x,
-                    originY: regionalImagery.committedRegionalPan.y,
-                  });
-                }}
-                onPointerMove={(event) => {
-                  if (
-                    !regionalImagery.regionalDragStart ||
-                    regionalImagery.regionalDragStart.pointerId !== event.pointerId
-                  ) {
-                    return;
-                  }
-
-                  regionalImagery.setRegionalPan({
-                    x: regionalImagery.regionalDragStart.originX + event.clientX - regionalImagery.regionalDragStart.x,
-                    y: regionalImagery.regionalDragStart.originY + event.clientY - regionalImagery.regionalDragStart.y,
-                  });
-                }}
-                onPointerUp={(event) => {
-                  const nextPan = regionalImagery.regionalDragStart
-                    ? {
-                        x: regionalImagery.regionalDragStart.originX + event.clientX - regionalImagery.regionalDragStart.x,
-                        y: regionalImagery.regionalDragStart.originY + event.clientY - regionalImagery.regionalDragStart.y,
-                      }
-                    : regionalImagery.regionalPan;
-
-                  regionalImagery.setRegionalDragStart(null);
-                  regionalImagery.commitRegionalPan(nextPan);
-                }}
-                onPointerCancel={() => {
-                  regionalImagery.setRegionalDragStart(null);
-                  regionalImagery.setRegionalPan(regionalImagery.committedRegionalPan);
                 }}
                 onLoad={() => regionalImagery.setImageLoading(false)}
                 onError={() => {
@@ -328,37 +337,39 @@ export function ImageryModal() {
             </div>
 
             <>
-                <div className="space-y-2 rounded-md border border-border bg-background/35 p-3">
-                  <Select
-                    value={askProvider}
-                    onValueChange={(value) => setAskProvider(value as AskProvider)}
-                  >
-                    <SelectTrigger aria-label="AI provider">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="openai">OpenAI</SelectItem>
-                      <SelectItem value="anthropic">Anthropic</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <textarea
-                    value={askPrompt}
-                    onChange={(event) => setAskPrompt(event.target.value)}
-                    rows={3}
-                    placeholder="Optional focus or context for the initial analysis"
-                    className="min-h-20 w-full resize-none rounded-md border border-input bg-background/70 px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                  />
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={() => setAskOpen(true)}
-                    disabled={!regionalImagery.imageUrl || regionalImagery.imageLoading}
-                    className="w-full"
-                  >
-                    <Bot className="h-4 w-4" />
-                    Ask about this view
-                  </Button>
-                </div>
+                {ASK_VIEW_VISIBLE && (
+                  <div className="space-y-2 rounded-md border border-border bg-background/35 p-3">
+                    <Select
+                      value={askProvider}
+                      onValueChange={(value) => setAskProvider(value as AskProvider)}
+                    >
+                      <SelectTrigger aria-label="AI provider">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="openai">OpenAI</SelectItem>
+                        <SelectItem value="anthropic">Anthropic</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <textarea
+                      value={askPrompt}
+                      onChange={(event) => setAskPrompt(event.target.value)}
+                      rows={3}
+                      placeholder="Optional focus or context for the initial analysis"
+                      className="min-h-20 w-full resize-none rounded-md border border-input bg-background/70 px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => setAskOpen(true)}
+                      disabled={!regionalImagery.imageUrl || regionalImagery.imageLoading}
+                      className="w-full"
+                    >
+                      <Bot className="h-4 w-4" />
+                      Ask about this view
+                    </Button>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-2">
                   <Button
@@ -426,15 +437,17 @@ export function ImageryModal() {
           </aside>
         </div>
       </DialogContent>
-      <AskViewModal
-        open={askOpen}
-        onOpenChange={setAskOpen}
-        askProvider={askProvider}
-        initialQuestion={askPrompt}
-        imageUrl={regionalImagery.imageUrl}
-        viewContext={askViewContext}
-        viewSignature={askViewSignature}
-      />
+      {ASK_VIEW_VISIBLE && (
+        <AskViewModal
+          open={askOpen}
+          onOpenChange={setAskOpen}
+          askProvider={askProvider}
+          initialQuestion={askPrompt}
+          imageUrl={regionalImagery.imageUrl}
+          viewContext={askViewContext}
+          viewSignature={askViewSignature}
+        />
+      )}
       <ImageryInfoModal open={infoOpen} onOpenChange={setInfoOpen} />
       <TimeLapseModal
         open={timeLapse.timeLapseOpen}
