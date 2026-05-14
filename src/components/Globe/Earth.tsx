@@ -19,12 +19,107 @@ type SelectHandlers = {
   onSelect: (lat: number, lon: number) => void;
 };
 
+type CachedGlobeTexture = {
+  texture?: Texture;
+  promise?: Promise<Texture>;
+  refs: number;
+  lastUsed: number;
+};
+
+const MAX_BACKGROUND_GLOBE_TEXTURES = 2;
+const backgroundGlobeTextureCache = new Map<string, CachedGlobeTexture>();
+
 function prepareGlobeTexture(texture: Texture, maxAnisotropy: number) {
   texture.colorSpace = SRGBColorSpace;
   texture.wrapS = RepeatWrapping;
   texture.offset.x = 0.5;
   texture.anisotropy = maxAnisotropy;
   texture.needsUpdate = true;
+}
+
+function getBackgroundGlobeTextureEntry(url: string) {
+  let entry = backgroundGlobeTextureCache.get(url);
+
+  if (!entry) {
+    entry = { refs: 0, lastUsed: Date.now() };
+    backgroundGlobeTextureCache.set(url, entry);
+  }
+
+  entry.lastUsed = Date.now();
+  return entry;
+}
+
+function pruneBackgroundGlobeTextureCache() {
+  const evictableEntries = [...backgroundGlobeTextureCache.entries()]
+    .filter(([, entry]) => entry.refs === 0 && entry.texture)
+    .sort(([, a], [, b]) => a.lastUsed - b.lastUsed);
+
+  while (backgroundGlobeTextureCache.size > MAX_BACKGROUND_GLOBE_TEXTURES) {
+    const evictable = evictableEntries.shift();
+
+    if (!evictable) {
+      return;
+    }
+
+    const [url, entry] = evictable;
+    entry.texture?.dispose();
+    backgroundGlobeTextureCache.delete(url);
+  }
+}
+
+function retainBackgroundGlobeTexture(url: string) {
+  const entry = getBackgroundGlobeTextureEntry(url);
+  entry.refs += 1;
+
+  return () => {
+    const retainedEntry = backgroundGlobeTextureCache.get(url);
+
+    if (!retainedEntry) {
+      return;
+    }
+
+    retainedEntry.refs = Math.max(0, retainedEntry.refs - 1);
+    retainedEntry.lastUsed = Date.now();
+    pruneBackgroundGlobeTextureCache();
+  };
+}
+
+function loadBackgroundGlobeTexture(url: string, maxAnisotropy: number) {
+  const entry = getBackgroundGlobeTextureEntry(url);
+
+  if (entry.texture) {
+    prepareGlobeTexture(entry.texture, maxAnisotropy);
+    return Promise.resolve(entry.texture);
+  }
+
+  if (entry.promise) {
+    return entry.promise;
+  }
+
+  const loader = new TextureLoader();
+
+  loader.setCrossOrigin("anonymous");
+  entry.promise = new Promise<Texture>((resolve, reject) => {
+    loader.load(
+      url,
+      (texture) => {
+        prepareGlobeTexture(texture, maxAnisotropy);
+        entry.texture = texture;
+        entry.promise = undefined;
+        entry.lastUsed = Date.now();
+        pruneBackgroundGlobeTextureCache();
+        resolve(texture);
+      },
+      undefined,
+      (error) => {
+        entry.promise = undefined;
+        backgroundGlobeTextureCache.delete(url);
+        reject(error);
+      },
+    );
+  });
+
+  return entry.promise;
 }
 
 function useGlobeTexture(textureUrl: string) {
@@ -54,39 +149,26 @@ function useBackgroundGlobeTexture(textureUrl: string | undefined, enabled: bool
     }
 
     let cancelled = false;
-    const loader = new TextureLoader();
+    const releaseTexture = retainBackgroundGlobeTexture(textureUrl);
 
     setLoadedTexture(null);
-    loader.setCrossOrigin("anonymous");
-    loader.load(
-      textureUrl,
-      (texture) => {
-        if (cancelled) {
-          texture.dispose();
-          return;
+    loadBackgroundGlobeTexture(textureUrl, gl.capabilities.getMaxAnisotropy())
+      .then((texture) => {
+        if (!cancelled) {
+          setLoadedTexture({ texture, url: textureUrl });
         }
-
-        prepareGlobeTexture(texture, gl.capabilities.getMaxAnisotropy());
-        setLoadedTexture({ texture, url: textureUrl });
-      },
-      undefined,
-      () => {
+      })
+      .catch(() => {
         if (!cancelled) {
           setLoadedTexture(null);
         }
-      },
-    );
+      });
 
     return () => {
       cancelled = true;
+      releaseTexture();
     };
   }, [enabled, gl, textureUrl]);
-
-  useEffect(() => {
-    return () => {
-      loadedTexture?.texture.dispose();
-    };
-  }, [loadedTexture]);
 
   return loadedTexture;
 }
