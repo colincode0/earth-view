@@ -19,6 +19,8 @@ import { Starfield } from "./Starfield";
 const MIN_GLOBE_DISTANCE = 1.06;
 const MAX_ZOOM_DISTANCE = 1.085;
 const VIEW_REPORT_INTERVAL = 8;
+const INITIAL_GLOBE_TEXTURE_WIDTH = 4096;
+const DETAILED_GLOBE_TEXTURE_WIDTH = 8192;
 
 function AdaptiveControls() {
   const controlsRef = useRef<OrbitControlsImpl>(null);
@@ -149,7 +151,12 @@ export function Globe() {
   const provider = getImageryProvider(layerId);
   const globeProvider = provider.layerId ? provider : getImageryProvider("viirs-noaa20");
   const baseDate = globeProvider.fixedDate ?? date;
-  const textureUrl = buildGlobalGibsTextureUrl(globeProvider.layerId ?? "", baseDate);
+  const textureUrl = buildGlobalGibsTextureUrl(globeProvider.layerId ?? "", baseDate, {
+    width: INITIAL_GLOBE_TEXTURE_WIDTH,
+  });
+  const upgradeTextureUrl = buildGlobalGibsTextureUrl(globeProvider.layerId ?? "", baseDate, {
+    width: DETAILED_GLOBE_TEXTURE_WIDTH,
+  });
   const overlayTextures = overlayLayerIds
     .map((id) => {
       const overlay = getImageryProvider(id);
@@ -162,18 +169,29 @@ export function Globe() {
     })
     .filter((entry): entry is { id: string; url: string } => entry !== null);
   const [loadedTextureUrl, setLoadedTextureUrl] = useState<string | null>(null);
-  const globeLoading = loadedTextureUrl !== textureUrl;
+  const globeLoading = loadedTextureUrl !== textureUrl && loadedTextureUrl !== upgradeTextureUrl;
 
   const handleEarthReady = useCallback((url: string) => {
     setLoadedTextureUrl(url);
   }, []);
 
   return (
-    <div className="absolute inset-0" data-testid="globe-stage">
+    <div
+      className="globe-stage absolute inset-0"
+      data-testid="globe-stage"
+      onDragStart={(event) => {
+        event.preventDefault();
+      }}
+    >
       <Canvas
+        className="globe-canvas"
         camera={{ position: [0, 0, 3.35], fov: 42, near: 0.01, far: 100 }}
+        draggable={false}
         dpr={[1, 2]}
         gl={{ antialias: true, alpha: true }}
+        onDragStart={(event) => {
+          event.preventDefault();
+        }}
       >
         <color attach="background" args={["#05070d"]} />
         <ambientLight intensity={0.5} />
@@ -184,6 +202,7 @@ export function Globe() {
           <Earth
             imageryVisible={imageryVisible}
             textureUrl={textureUrl}
+            upgradeTextureUrl={upgradeTextureUrl}
             overlayTextures={overlayTextures}
             onSelect={selectPoint}
             onReady={handleEarthReady}

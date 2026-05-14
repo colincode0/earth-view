@@ -83,4 +83,10 @@
     user-select: none;
     white-space: nowrap;
   }
+
+  .globe-stage,
+  .globe-stage canvas {
+    -webkit-user-drag: none;
+    user-select: none;
+  }
 }

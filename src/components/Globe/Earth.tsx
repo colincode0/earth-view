@@ -1,5 +1,5 @@
 import { ThreeEvent, useLoader, useThree } from "@react-three/fiber";
-import { Suspense, useEffect, useRef } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { RepeatWrapping, SRGBColorSpace, type Texture, TextureLoader, Vector3 } from "three";
 import { pointToLatLon } from "@/lib/geo";
 
@@ -8,6 +8,7 @@ type OverlayTexture = { id: string; url: string };
 type EarthProps = {
   imageryVisible: boolean;
   textureUrl: string;
+  upgradeTextureUrl?: string;
   overlayTextures?: OverlayTexture[];
   overlayOpacity?: number;
   onSelect: (lat: number, lon: number) => void;
@@ -18,6 +19,14 @@ type SelectHandlers = {
   onSelect: (lat: number, lon: number) => void;
 };
 
+function prepareGlobeTexture(texture: Texture, maxAnisotropy: number) {
+  texture.colorSpace = SRGBColorSpace;
+  texture.wrapS = RepeatWrapping;
+  texture.offset.x = 0.5;
+  texture.anisotropy = maxAnisotropy;
+  texture.needsUpdate = true;
+}
+
 function useGlobeTexture(textureUrl: string) {
   const { gl } = useThree();
   const texture = useLoader(TextureLoader, textureUrl, (loader) => {
@@ -25,14 +34,61 @@ function useGlobeTexture(textureUrl: string) {
   });
 
   useEffect(() => {
-    texture.colorSpace = SRGBColorSpace;
-    texture.wrapS = RepeatWrapping;
-    texture.offset.x = 0.5;
-    texture.anisotropy = gl.capabilities.getMaxAnisotropy();
-    texture.needsUpdate = true;
+    prepareGlobeTexture(texture, gl.capabilities.getMaxAnisotropy());
   }, [gl, texture]);
 
   return texture;
+}
+
+function useBackgroundGlobeTexture(textureUrl: string | undefined, enabled: boolean) {
+  const { gl } = useThree();
+  const [loadedTexture, setLoadedTexture] = useState<{
+    texture: Texture;
+    url: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!textureUrl || !enabled) {
+      setLoadedTexture(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loader = new TextureLoader();
+
+    setLoadedTexture(null);
+    loader.setCrossOrigin("anonymous");
+    loader.load(
+      textureUrl,
+      (texture) => {
+        if (cancelled) {
+          texture.dispose();
+          return;
+        }
+
+        prepareGlobeTexture(texture, gl.capabilities.getMaxAnisotropy());
+        setLoadedTexture({ texture, url: textureUrl });
+      },
+      undefined,
+      () => {
+        if (!cancelled) {
+          setLoadedTexture(null);
+        }
+      },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, gl, textureUrl]);
+
+  useEffect(() => {
+    return () => {
+      loadedTexture?.texture.dispose();
+    };
+  }, [loadedTexture]);
+
+  return loadedTexture;
 }
 
 function useGlobeClickHandlers({ onSelect }: SelectHandlers) {
@@ -108,17 +164,21 @@ export function PlaceholderEarth({ onSelect }: SelectHandlers) {
 export function Earth({
   imageryVisible,
   textureUrl,
+  upgradeTextureUrl,
   overlayTextures,
   overlayOpacity = 0.75,
   onSelect,
   onReady,
 }: EarthProps) {
-  const texture = useGlobeTexture(textureUrl);
+  const baseTexture = useGlobeTexture(textureUrl);
+  const upgradeTexture = useBackgroundGlobeTexture(upgradeTextureUrl, imageryVisible);
+  const texture = upgradeTexture?.texture ?? baseTexture;
+  const activeTextureUrl = upgradeTexture?.url ?? textureUrl;
   const { handleClick, handleContextMenu } = useGlobeClickHandlers({ onSelect });
 
   useEffect(() => {
-    onReady?.(textureUrl);
-  }, [onReady, texture, textureUrl]);
+    onReady?.(activeTextureUrl);
+  }, [activeTextureUrl, onReady, texture]);
 
   return (
     <group>
