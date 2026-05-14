@@ -6,6 +6,7 @@ import {
   IMAGERY_ZOOM_MIN_DEGREES,
   clamp,
 } from "@/lib/geo";
+import { modalImageryProviders } from "@/providers/registry";
 
 type SelectedPoint = {
   lat: number;
@@ -81,6 +82,9 @@ type AppState = {
 };
 
 const initialTrueColorImagery = getLatestTrueColorImagery();
+const defaultModalLayerId =
+  modalImageryProviders.find((provider) => provider.sentinelVariantId)?.id ??
+  initialTrueColorImagery.layerId;
 
 export const useAppStore = create<AppState>((set) => ({
   selectedPoint: null,
@@ -114,7 +118,7 @@ export const useAppStore = create<AppState>((set) => ({
               overlayLayerIds: state.overlayLayerIds,
             },
         date: state.dateManuallySelected ? state.date : latestTrueColorImagery.date,
-        layerId: state.layerManuallySelected ? state.layerId : latestTrueColorImagery.layerId,
+        layerId: state.layerManuallySelected ? state.layerId : defaultModalLayerId,
         imageryZoomDegrees:
           zoomDegrees === undefined
             ? state.globeView?.atMaxZoom
