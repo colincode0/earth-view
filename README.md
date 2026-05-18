@@ -1,22 +1,64 @@
 # Earth View
 
-Earth View is an interactive satellite-imagery globe built with React, Vite, Three.js, and Tailwind CSS. It starts as a full-screen 3D Earth using NASA GIBS daily imagery, then lets you select places, inspect regional NASA and Copernicus Sentinel imagery, compare layers, and build short time-lapse sequences.
+Earth View is an interactive satellite-imagery exploration app built with React, Vite, Three.js, and Tailwind CSS. It has two main working surfaces: a full-screen 3D globe for broad exploration, and a regional modal workspace for detailed inspection after a place has been selected.
 
-The app is intentionally exploratory: orbit the planet, zoom into a region, choose a date and imagery layer, then step into a detailed modal workspace when a location is worth inspecting. The modal can also start an AI chat about the current rendered view, including the image, coordinates, capture context, active provider, and optional user focus text.
+The app is intentionally exploratory. Start in the globe view to orbit Earth, compare global NASA GIBS imagery layers, stack analytic overlays, and watch recent/open activity markers. When a location is worth a closer look, shift-click or right-click to open the modal view, where the same selected point becomes a pan/zoom regional image with date controls, layer switching, Sentinel imagery, scene metadata, and time-lapse tools.
 
 ## What It Does
 
 - Renders an interactive 3D globe with NASA GIBS WMS imagery wrapped onto a Three.js sphere.
-- Supports daily MODIS and VIIRS true-color and false-color base layers, NASA GIBS analytic overlays, and regional Sentinel-2 optical and Sentinel-1 radar layers.
+- Supports daily MODIS and VIIRS true-color and false-color base layers in the globe view.
+- Supports NASA GIBS analytic overlays for aerosols, cloud-top temperature, precipitable water, sea surface temperature, chlorophyll, snow cover, sea ice, and active fires.
+- Supports regional Sentinel-2 optical and Sentinel-1 radar layers in detailed regional views.
 - Shows country borders, state/province boundaries, graticule lines, and tiered city labels.
-- Adds optional global overlays for aerosols, cloud-top temperature, precipitable water, sea surface temperature, chlorophyll, snow cover, sea ice, and active fires.
 - Adds optional activity overlays for recent USGS earthquakes and open NASA EONET volcano and severe-storm events.
 - Switches into a higher-detail 2D imagery overlay when the camera reaches max zoom.
 - Opens a regional imagery modal from shift-click or right-click selection.
 - Supports date selection, layer switching, pan/zoom, and 7-day or 30-day regional time lapses.
 - Requests Copernicus Sentinel-2 optical and Sentinel-1 radar imagery in the same regional modal through local/API server handlers.
 - Provides Sentinel scene searches, scene-based time lapses, a five-year sampled comparison, and GIF export for Sentinel sequences.
-- Adds an "Ask about this view" AI chat for OpenAI or Anthropic with streaming responses, optional web search, and session-only follow-up context.
+- Includes server and client plumbing for an "Ask about this view" AI chat, although that UI is currently hidden behind a feature flag in `ImageryModal.tsx`.
+
+## The Two Main Views
+
+### Globe View
+
+The globe view is the app's default surface. It is built around a Three.js Earth, NASA GIBS global WMS textures, and camera controls that report the currently visible center point and viewport span back into shared app state.
+
+In this view, users can:
+
+- Drag to orbit Earth and scroll or pinch to zoom.
+- Switch globe-capable base imagery from the floating imagery panel or number keys.
+- Hide or show base imagery while keeping boundaries and overlays available.
+- Add, reorder, remove, or clear GIBS analytic overlays.
+- Toggle activity overlays for earthquakes, volcanoes, and storms.
+- See graticule lines, country borders, admin-1 boundaries, and tiered city labels.
+- Enter a max-zoom 2D detailed imagery overlay when the camera gets close enough.
+- Select a point with shift-click or right-click to open the modal view.
+
+At max zoom, the app overlays a higher-detail regional image for the current viewport. That overlay can be dragged to pan the camera, and selecting a point from it preserves the visible regional span so the modal opens at a matching scale.
+
+Sentinel layers are regional-only providers. They can be selected once the app is operating at the detailed regional level, but they are not wrapped as true globe textures; the globe falls back to a global VIIRS true-color base while Sentinel imagery is rendered through the regional API flow.
+
+### Modal View
+
+The modal view is the detailed inspection workspace. It opens from a selected coordinate and focuses on a bounded regional image instead of the whole planet.
+
+In this view, users can:
+
+- Drag the regional image to pan.
+- Scroll to zoom the regional image.
+- Shift-click to recenter the selected point.
+- Change the active date.
+- Switch between Sentinel, MODIS, VIIRS, night-lights, and analytic GIBS layers.
+- Open the imagery info dialog to compare layer purpose, resolution, caveats, and best use cases.
+- Build 7-day or 30-day regional time lapses for daily GIBS layers.
+- Build 7-mosaic, 30-mosaic, or five-year sampled time lapses for Sentinel layers.
+- Export Sentinel time-lapse sequences as animated GIFs.
+
+When the modal opens, the app stores the previous globe date, layer, manual-selection flags, and overlay stack. Closing the modal restores that prior globe state so regional inspection does not permanently disturb the broader globe context.
+
+For Sentinel layers, the modal also searches contributing scenes near the selected date. When multiple acquisitions contribute to the rendered mosaic, the sidebar lists the scene acquisition times and Sentinel-2 cloud-cover values where available.
 
 ## Data Sources
 
@@ -72,7 +114,9 @@ These overlays are optional UI toggles. If a feed fails, the corresponding overl
 
 ### AI View Analysis
 
-The imagery modal includes an "Ask about this view" panel. The user can choose OpenAI or Anthropic, add optional focus/context text, and open a chat seeded with:
+The codebase includes an experimental "Ask about this view" flow for OpenAI or Anthropic, but the UI is currently disabled by `ASK_VIEW_VISIBLE = false` in `src/components/Modal/ImageryModal.tsx`.
+
+When enabled, the flow can open a chat seeded with:
 
 - the currently displayed image
 - selected coordinates and date
@@ -110,7 +154,7 @@ COPERNICUS_CLIENT_ID=
 COPERNICUS_CLIENT_SECRET=
 ```
 
-For AI view analysis, fill in one or both provider keys:
+For the disabled AI view-analysis flow, fill in one or both provider keys if you plan to enable the UI or call the Ask View endpoints directly:
 
 ```bash
 OPENAI_API_KEY=
@@ -143,17 +187,30 @@ npm run lint     # Run ESLint
 
 ## How To Use The App
 
+### Globe View
+
 - Drag the globe to rotate Earth.
 - Scroll or pinch to zoom.
 - Use the imagery panel or number keys to switch available base layers.
 - Add GIBS analytic overlays from the overlay selector, reorder them, remove them, or clear the overlay stack.
 - Toggle activity overlays for earthquakes, volcanoes, and storms.
-- Sentinel layers only appear in the globe imagery panel at max zoom; all regional layers are available in the modal layer switcher, with Sentinel listed first.
 - At max zoom, the app replaces the globe view with a higher-detail WMS image for the current viewport.
 - Shift-click or right-click the globe or max-zoom image to select a point and open the imagery modal.
-- In the regional modal, drag to pan, scroll to zoom, shift-click to recenter, change the date, switch layers, or build 7-day and 30-day time lapses.
-- For Sentinel layers, the time-lapse controls search and render scene sequences, including a five-year sampled comparison and GIF export.
-- To use AI analysis, choose OpenAI or Anthropic, optionally describe what to focus on, then click "Ask about this view." Follow-up questions stay scoped to that chat session and the captured view context.
+- Use max-zoom drag gestures to pan the detailed overlay before selecting a point.
+
+### Modal View
+
+- Drag to pan the regional image.
+- Scroll to zoom the regional image.
+- Shift-click to recenter on a new point without leaving the modal.
+- Change the date, switch layers, or open the imagery info dialog from the sidebar.
+- Use number keys to switch layers while the modal is open.
+- Use 7-day and 30-day time-lapse controls for daily GIBS imagery.
+- Use 7-mosaic, 30-mosaic, and five-year sampled time-lapse controls for Sentinel imagery.
+- Download Sentinel time-lapse sequences as GIFs.
+- Close the modal to restore the globe's previous date, layer, manual-selection state, and overlay stack.
+
+Sentinel layers are listed first in the modal layer switcher. They require Copernicus credentials and may take longer to render than GIBS WMS layers because they go through the server/API Sentinel Process and Catalog flows.
 
 ## Project Structure
 
@@ -169,7 +226,7 @@ npm run lint     # Run ESLint
 │   ├── main.tsx                # React entry point
 │   ├── components/
 │   │   ├── Globe/              # Three.js globe, overlays, labels, controls, max-zoom imagery
-│   │   ├── Modal/              # Imagery modal UI, AI chat, hooks, layer/date/time-lapse dialogs
+│   │   ├── Modal/              # Imagery modal UI, hidden AI chat plumbing, hooks, layer/date/time-lapse dialogs
 │   │   └── ui/                 # Small Radix/Tailwind UI primitives
 │   ├── lib/
 │   │   ├── captureTime.ts      # Estimated and exact capture-time formatting
@@ -222,9 +279,9 @@ npm run lint     # Run ESLint
 - imagery zoom level
 - camera focus requests
 
-`src/components/Modal/ImageryModal.tsx` is the main inspection workspace. It keeps the dialog layout and control wiring in one place, while `src/components/Modal/hooks/` owns the focused behavior for pane sizing, object URL cleanup, regional imagery loading, Sentinel scene requests, and time-lapse orchestration.
+`src/components/Modal/ImageryModal.tsx` is the main inspection workspace. It keeps the dialog layout and control wiring in one place, while `src/components/Modal/hooks/` owns the focused behavior for pane sizing, object URL cleanup, regional imagery loading, Sentinel scene requests, drag and zoom interactions, and time-lapse orchestration.
 
-`src/components/Modal/AskViewModal.tsx` owns the AI chat UI. It captures the current rendered image as a data URL, sends it with structured view metadata, streams assistant text into the chat, and preserves a compact hidden view briefing for follow-up questions. If the current imagery position, date, layer, or zoom changes while the chat is open, the chat shows a stale-context notice and can restart against the new view.
+`src/components/Modal/AskViewModal.tsx` owns the hidden AI chat UI. It captures the current rendered image as a data URL, sends it with structured view metadata, streams assistant text into the chat, and preserves a compact hidden view briefing for follow-up questions. If the current imagery position, date, layer, or zoom changes while the chat is open, the chat can show a stale-context notice and restart against the new view. This code is present, but `ImageryModal.tsx` currently hides it with `ASK_VIEW_VISIBLE = false`.
 
 ### Imagery Providers
 
@@ -300,7 +357,7 @@ For a regional Sentinel provider:
 
 ## Deployment Notes
 
-The app is a Vite SPA with serverless-style Sentinel and AI endpoints. The static build is produced by `npm run build`; deployment environments must also provide Sentinel credentials if Sentinel rendering should work and AI provider keys if Ask View should work.
+The app is a Vite SPA with serverless-style Sentinel and AI endpoints. The static build is produced by `npm run build`; deployment environments must also provide Sentinel credentials if Sentinel rendering should work and AI provider keys if the hidden Ask View UI is enabled or the Ask View endpoints are called directly.
 
 NASA GIBS imagery, boundary GeoJSON, USGS earthquakes, and NASA EONET event feeds are fetched directly by the browser. Sentinel and AI credentials are never sent to the browser; they are read only by the server/API layer.
 
