@@ -1,0 +1,4 @@
+interface:
+  display_name: "Earth View Modal"
+  short_description: "Work on the regional modal workspace"
+  default_prompt: "Use $earth-view-modal to update or debug the Earth View regional modal workspace."

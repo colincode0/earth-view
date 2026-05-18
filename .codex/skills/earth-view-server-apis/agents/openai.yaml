@@ -1,0 +1,4 @@
+interface:
+  display_name: "Earth View APIs"
+  short_description: "Work on Sentinel and Ask View APIs"
+  default_prompt: "Use $earth-view-server-apis to update or debug Earth View Sentinel and Ask View endpoints."

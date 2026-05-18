@@ -5,6 +5,18 @@ export type BoundingBox = {
   maxLon: number;
 };
 
+export type SentinelScenePosition = [number, number] | [number, number, number];
+
+export type SentinelSceneGeometry =
+  | {
+      type: "Polygon";
+      coordinates: SentinelScenePosition[][];
+    }
+  | {
+      type: "MultiPolygon";
+      coordinates: SentinelScenePosition[][][];
+    };
+
 export type ImageryRequest = {
   bbox: BoundingBox;
   date: string;

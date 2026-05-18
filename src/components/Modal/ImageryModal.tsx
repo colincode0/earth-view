@@ -24,6 +24,11 @@ import {
 } from "@/lib/captureTime";
 import { getImageryProvider, modalImageryProviders } from "@/providers/registry";
 import { useAppStore } from "@/store/useAppStore";
+import type {
+  BoundingBox,
+  SentinelSceneGeometry,
+  SentinelScenePosition,
+} from "@/types/imagery";
 import { DatePicker } from "./DatePicker";
 import { ImageryInfoButton, ImageryInfoModal } from "./ImageryInfoModal";
 import {
@@ -38,6 +43,7 @@ import { LayerSwitcher } from "./LayerSwitcher";
 import { TimeLapseModal } from "./TimeLapseModal";
 
 const ASK_VIEW_VISIBLE = false;
+const SCENE_FOOTPRINT_STROKE = "#34d399";
 
 function viewSignature(context: AskViewContext | null, imageUrl: string | null) {
   if (!context || !imageUrl) {
@@ -62,6 +68,104 @@ function viewSignature(context: AskViewContext | null, imageUrl: string | null) 
   });
 }
 
+function scenePointToSvgPoint(point: SentinelScenePosition, bbox: BoundingBox) {
+  const [lon, lat] = point;
+  const lonSpan = bbox.maxLon - bbox.minLon;
+  const latSpan = bbox.maxLat - bbox.minLat;
+
+  if (lonSpan <= 0 || latSpan <= 0) {
+    return null;
+  }
+
+  return {
+    x: ((lon - bbox.minLon) / lonSpan) * 100,
+    y: ((bbox.maxLat - lat) / latSpan) * 100,
+  };
+}
+
+function ringPath(ring: SentinelScenePosition[], bbox: BoundingBox) {
+  const points = ring
+    .map((point) => scenePointToSvgPoint(point, bbox))
+    .filter((point): point is { x: number; y: number } => point !== null);
+
+  if (points.length < 2) {
+    return "";
+  }
+
+  return `${points
+    .map((point, index) =>
+      `${index === 0 ? "M" : "L"} ${point.x.toFixed(3)} ${point.y.toFixed(3)}`,
+    )
+    .join(" ")} Z`;
+}
+
+function geometryPaths(geometry: SentinelSceneGeometry, bbox: BoundingBox) {
+  if (geometry.type === "Polygon") {
+    return geometry.coordinates
+      .map((ring) => ringPath(ring, bbox))
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  return geometry.coordinates
+    .flatMap((polygon) => polygon.map((ring) => ringPath(ring, bbox)))
+    .filter(Boolean)
+    .join(" ");
+}
+
+function SceneFootprintOverlay({
+  bbox,
+  geometries,
+  pan,
+  scale,
+  loading,
+}: {
+  bbox: BoundingBox;
+  geometries: SentinelSceneGeometry[];
+  pan: { x: number; y: number };
+  scale: number;
+  loading: boolean;
+}) {
+  const paths = geometries
+    .map((geometry, index) => ({
+      id: `${geometry.type}-${index}`,
+      d: geometryPaths(geometry, bbox),
+    }))
+    .filter((path) => path.d);
+
+  if (paths.length === 0) {
+    return null;
+  }
+
+  return (
+    <svg
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0 z-[1]"
+      preserveAspectRatio="none"
+      viewBox="0 0 100 100"
+      style={{
+        transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
+        transformOrigin: "center",
+        transition: loading ? "none" : "transform 160ms ease-out",
+      }}
+    >
+      {paths.map((path) => (
+        <path
+          key={path.id}
+          d={path.d}
+          fill={`${SCENE_FOOTPRINT_STROKE}18`}
+          fillRule="evenodd"
+          stroke={SCENE_FOOTPRINT_STROKE}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={0.55}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+    </svg>
+  );
+}
+
 export function ImageryModal() {
   const {
     selectedPoint,
@@ -79,6 +183,7 @@ export function ImageryModal() {
   const [askOpen, setAskOpen] = useState(false);
   const [askProvider, setAskProvider] = useState<AskProvider>("openai");
   const [askPrompt, setAskPrompt] = useState("");
+  const [hoveredSceneDateTime, setHoveredSceneDateTime] = useState<string | null>(null);
   const provider = getImageryProvider(layerId);
   const selectedLon = selectedPoint?.lon;
   const isRegionalSentinel = Boolean(provider.sentinelVariantId);
@@ -158,6 +263,9 @@ export function ImageryModal() {
     : "";
   const regionalCaptureLabel = formatGibsCaptureTime(date, provider.id, selectedLon);
   const acquiredScenes = regionalImagery.acquiredScenes;
+  const hoveredScene = hoveredSceneDateTime
+    ? acquiredScenes.find((scene) => scene.dateTime === hoveredSceneDateTime) ?? null
+    : null;
   const mostRecentSceneTime = acquiredScenes[0]?.dateTime ?? null;
   const regionalProviderCaptureLabel = provider.sentinelVariantId
     ? mostRecentSceneTime
@@ -276,6 +384,18 @@ export function ImageryModal() {
                 }}
               />
             ) : null}
+            {regionalImagery.imageUrl &&
+              regionalImagery.bbox &&
+              hoveredScene &&
+              hoveredScene.geometries.length > 0 && (
+                <SceneFootprintOverlay
+                  bbox={regionalImagery.bbox}
+                  geometries={hoveredScene.geometries}
+                  pan={regionalImagery.regionalPan}
+                  scale={regionalImagery.imagePreviewScale}
+                  loading={regionalImagery.regionalDragStart !== null || regionalImagery.imageLoading}
+                />
+              )}
             {!regionalImagery.imageUrl && regionalImagery.imageLoading && !regionalImagery.error && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/70">
                 <div className="flex items-center gap-2 rounded-md border border-white/10 bg-background/80 px-3 py-2 text-sm shadow-xl backdrop-blur">
@@ -325,10 +445,25 @@ export function ImageryModal() {
                   <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     Scenes in mosaic
                   </div>
-                  <ul className="space-y-1 text-xs text-muted-foreground">
+                  <ul
+                    className="space-y-1 text-xs text-muted-foreground"
+                    onMouseLeave={() => setHoveredSceneDateTime(null)}
+                  >
                     {acquiredScenes.map((scene) => (
-                      <li key={scene.dateTime} className="font-mono">
-                        {formatSceneAcquisition(scene)}
+                      <li key={scene.dateTime}>
+                        <button
+                          type="button"
+                          className={`w-full rounded-sm px-1 py-0.5 text-left font-mono transition-colors ${
+                            hoveredSceneDateTime === scene.dateTime
+                              ? "bg-emerald-400/10 text-emerald-200"
+                              : "hover:bg-white/5 hover:text-foreground focus:bg-emerald-400/10 focus:text-emerald-200 focus:outline-none"
+                          }`}
+                          onBlur={() => setHoveredSceneDateTime(null)}
+                          onFocus={() => setHoveredSceneDateTime(scene.dateTime)}
+                          onMouseEnter={() => setHoveredSceneDateTime(scene.dateTime)}
+                        >
+                          {formatSceneAcquisition(scene)}
+                        </button>
                       </li>
                     ))}
                   </ul>

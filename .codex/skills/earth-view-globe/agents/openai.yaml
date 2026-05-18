@@ -1,0 +1,4 @@
+interface:
+  display_name: "Earth View Globe"
+  short_description: "Navigate Earth View globe architecture"
+  default_prompt: "Use $earth-view-globe to update or debug the Earth View globe experience."

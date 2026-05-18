@@ -16,7 +16,7 @@ import {
   zoomPercentToDegrees,
 } from "@/lib/geo";
 import { getSentinelVariant } from "@/lib/sentinelVariants";
-import type { ImageryProvider } from "@/types/imagery";
+import type { ImageryProvider, SentinelSceneGeometry } from "@/types/imagery";
 import {
   bboxFromSpans,
   preloadImage,
@@ -26,6 +26,7 @@ import type { ManagedObjectUrl } from "./types";
 export type SceneAcquisition = {
   dateTime: string;
   cloudCover: number | null;
+  geometries: SentinelSceneGeometry[];
 };
 
 type CachedRegionalImage = {
@@ -37,6 +38,7 @@ type SentinelSceneResponse = {
   scenes?: Array<{
     dateTime: string;
     cloudCover?: number | null;
+    geometries?: SentinelSceneGeometry[];
   }>;
   error?: string;
 };
@@ -303,12 +305,17 @@ export function useRegionalImagery({
 
       const body = (await response.json()) as SentinelSceneResponse;
       return (body.scenes ?? [])
-        .filter((scene): scene is { dateTime: string; cloudCover?: number | null } =>
+        .filter((scene): scene is {
+          dateTime: string;
+          cloudCover?: number | null;
+          geometries?: SentinelSceneGeometry[];
+        } =>
           Boolean(scene.dateTime),
         )
         .map((scene) => ({
           dateTime: scene.dateTime,
           cloudCover: scene.cloudCover ?? null,
+          geometries: scene.geometries ?? [],
         }));
     }
 

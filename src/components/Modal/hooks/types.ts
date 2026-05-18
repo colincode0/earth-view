@@ -1,4 +1,4 @@
-import type { BoundingBox } from "@/types/imagery";
+import type { BoundingBox, SentinelSceneGeometry } from "@/types/imagery";
 import type { TimeLapseFrame } from "../TimeLapseModal";
 
 export type TimeLapseMode = 7 | 30 | "5y";
@@ -14,6 +14,7 @@ export type SentinelScene = {
   dateTime: string;
   cloudCover: number | null;
   itemIds: string[];
+  geometries?: SentinelSceneGeometry[];
 };
 
 export type SentinelTimeLapseCacheValue = {

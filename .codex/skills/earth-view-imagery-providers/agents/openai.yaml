@@ -1,0 +1,4 @@
+interface:
+  display_name: "Earth View Imagery"
+  short_description: "Change imagery layers and providers"
+  default_prompt: "Use $earth-view-imagery-providers to add, update, or debug Earth View imagery layers."

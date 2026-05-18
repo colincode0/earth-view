@@ -1,4 +1,4 @@
-import type { BoundingBox } from "../types/imagery";
+import type { BoundingBox, SentinelSceneGeometry } from "../types/imagery";
 import { getSentinelVariant } from "../lib/sentinelVariants";
 
 const TOKEN_URL =
@@ -37,6 +37,7 @@ type TokenResponse = {
 
 type CatalogFeature = {
   id?: string;
+  geometry?: SentinelSceneGeometry | null;
   properties?: {
     datetime?: string;
     "eo:cloud_cover"?: number;
@@ -282,7 +283,7 @@ export async function fetchSentinelScenes(input: SentinelScenesRequest, env: Sen
     datetime: catalogDateWindow(request.date, request.lookbackDays),
     limit: request.limit,
     fields: {
-      include: ["id", "properties.datetime", "properties.eo:cloud_cover"],
+      include: ["id", "geometry", "properties.datetime", "properties.eo:cloud_cover"],
     },
   };
 
@@ -307,7 +308,12 @@ export async function fetchSentinelScenes(input: SentinelScenesRequest, env: Sen
   const catalog = (await response.json()) as CatalogResponse;
   const sceneMap = new Map<
     string,
-    { dateTime: string; cloudCover: number | null; itemIds: string[] }
+    {
+      dateTime: string;
+      cloudCover: number | null;
+      itemIds: string[];
+      geometries: SentinelSceneGeometry[];
+    }
   >();
 
   for (const feature of catalog.features ?? []) {
@@ -330,6 +336,10 @@ export async function fetchSentinelScenes(input: SentinelScenesRequest, env: Sen
         existing.itemIds.push(feature.id);
       }
 
+      if (feature.geometry) {
+        existing.geometries.push(feature.geometry);
+      }
+
       continue;
     }
 
@@ -337,6 +347,7 @@ export async function fetchSentinelScenes(input: SentinelScenesRequest, env: Sen
       dateTime,
       cloudCover,
       itemIds: feature.id ? [feature.id] : [],
+      geometries: feature.geometry ? [feature.geometry] : [],
     });
   }
 
