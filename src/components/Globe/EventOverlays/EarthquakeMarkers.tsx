@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { latLonToVector } from "@/lib/geo";
 import { ActivityCrosshair } from "./ActivityCrosshair";
+import {
+  formatCoordinate,
+  formatEventAge,
+  formatEventDate,
+} from "./eventDetails";
 import { fetchJsonCached } from "./eventFetch";
+import type { ActivityMarkerDetail } from "./activityHoverStore";
 
 const USGS_FEED_URL =
   "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson";
@@ -10,7 +16,19 @@ const MARKER_RADIUS = 1.012;
 
 type EarthquakeFeature = {
   id: string;
-  properties: { mag: number | null; place: string | null; time: number };
+  properties: {
+    alert: string | null;
+    mag: number | null;
+    magType: string | null;
+    place: string | null;
+    status: string | null;
+    time: number;
+    title: string | null;
+    tsunami: number;
+    type: string | null;
+    updated: number | null;
+    url: string | null;
+  };
   geometry: { type: "Point"; coordinates: [number, number, number] };
 };
 
@@ -23,6 +41,8 @@ type Quake = {
   lat: number;
   lon: number;
   magnitude: number;
+  depthKm: number;
+  detail: ActivityMarkerDetail;
 };
 
 function magnitudeToSizeMultiplier(magnitude: number) {
@@ -51,8 +71,62 @@ export function EarthquakeMarkers() {
           const magnitude = feature.properties.mag;
           if (magnitude === null || magnitude < 2.5) continue;
 
-          const [lon, lat] = feature.geometry.coordinates;
-          next.push({ id: feature.id, lat, lon, magnitude });
+          const [lon, lat, depthKm] = feature.geometry.coordinates;
+          const occurredAt = formatEventDate(feature.properties.time);
+          const recency = formatEventAge(feature.properties.time);
+          const updatedAt = feature.properties.updated
+            ? formatEventDate(feature.properties.updated)
+            : null;
+          const title =
+            feature.properties.title ??
+            `M ${magnitude.toFixed(1)} earthquake`;
+          const rows: ActivityMarkerDetail["rows"] = [
+            { label: "Magnitude", value: magnitude.toFixed(1) },
+            { label: "Depth", value: `${depthKm.toFixed(1)} km` },
+            {
+              label: "Location",
+              value: `${formatCoordinate(lat, ["N", "S"])}, ${formatCoordinate(lon, ["E", "W"])}`,
+            },
+          ];
+
+          if (feature.properties.magType) {
+            rows.push({ label: "Scale", value: feature.properties.magType.toUpperCase() });
+          }
+
+          if (feature.properties.alert) {
+            rows.push({ label: "Alert", value: feature.properties.alert });
+          }
+
+          if (updatedAt) {
+            rows.push({ label: "Updated", value: updatedAt });
+          }
+
+          if (feature.properties.status) {
+            rows.push({ label: "Status", value: feature.properties.status });
+          }
+
+          if (feature.properties.tsunami) {
+            rows.push({ label: "Tsunami", value: "Possible" });
+          }
+
+          next.push({
+            id: feature.id,
+            lat,
+            lon,
+            magnitude,
+            depthKm,
+            detail: {
+              id: feature.id,
+              kind: "Earthquake",
+              title,
+              subtitle: feature.properties.place ?? feature.properties.type ?? undefined,
+              occurredAt: occurredAt ?? undefined,
+              recency: recency ?? undefined,
+              sourceLabel: "USGS",
+              sourceUrl: feature.properties.url ?? undefined,
+              rows,
+            },
+          });
         }
         setQuakes(next);
       })
@@ -85,6 +159,7 @@ export function EarthquakeMarkers() {
         <ActivityCrosshair
           key={marker.id}
           color={marker.color}
+          detail={marker.detail}
           position={marker.position}
           sizeMultiplier={marker.sizeMultiplier}
         />

@@ -11,7 +11,7 @@ The app is intentionally exploratory. Start in the globe view to orbit Earth, co
 - Supports NASA GIBS analytic overlays for aerosols, cloud-top temperature, precipitable water, sea surface temperature, chlorophyll, snow cover, sea ice, and active fires.
 - Supports regional Sentinel-2 optical and Sentinel-1 radar layers in detailed regional views.
 - Shows country borders, state/province boundaries, graticule lines, and tiered city labels.
-- Adds optional activity overlays for recent USGS earthquakes and open NASA EONET volcano and severe-storm events.
+- Adds optional activity overlays for recent USGS earthquakes and open NASA EONET volcano and severe-storm events, with hover details for names, dates, recency, and severity where the feeds provide them.
 - Switches into a higher-detail 2D imagery overlay when the camera reaches max zoom.
 - Opens a regional imagery modal from shift-click or right-click selection.
 - Supports date selection, layer switching, pan/zoom, and 7-day or 30-day regional time lapses.
@@ -30,8 +30,9 @@ In this view, users can:
 - Drag to orbit Earth and scroll or pinch to zoom.
 - Switch globe-capable base imagery from the floating imagery panel or number keys.
 - Hide or show base imagery while keeping boundaries and overlays available.
-- Add, reorder, remove, or clear GIBS analytic overlays.
-- Toggle activity overlays for earthquakes, volcanoes, and storms.
+- Add, reorder, remove, or clear GIBS analytic overlays. Overlay rows include loading/loaded status indicators, and the add menu only lists analytic `overlayOnly` providers rather than base imagery.
+- Toggle activity overlays for earthquakes, volcanoes, and storms. Activity markers use dark-stroked shapes for contrast, with earthquakes and storms shown as crosshairs and volcanoes shown as X markers.
+- Hover activity markers to inspect feed metadata. When marker hit areas overlap, the hovered event is chosen by whichever marker center is closest to the pointer.
 - See graticule lines, country borders, admin-1 boundaries, and tiered city labels.
 - Enter a max-zoom 2D detailed imagery overlay when the camera gets close enough.
 - Select a point with shift-click or right-click to open the modal view.
@@ -47,7 +48,7 @@ The modal view is the detailed inspection workspace. It opens from a selected co
 In this view, users can:
 
 - Drag the regional image to pan.
-- Scroll to zoom the regional image.
+- Scroll to zoom the regional image. Preview zoom/pan updates are immediate, while the committed bbox/image reload follows the latest settled interaction so repeated zooms and drags do not anchor on stale imagery.
 - Shift-click to recenter the selected point.
 - Change the active date.
 - Switch between Sentinel, MODIS, VIIRS, night-lights, and analytic GIBS layers.
@@ -58,7 +59,7 @@ In this view, users can:
 
 When the modal opens, the app stores the previous globe date, layer, manual-selection flags, and overlay stack. Closing the modal restores that prior globe state so regional inspection does not permanently disturb the broader globe context.
 
-For Sentinel layers, the modal also searches contributing scenes near the selected date. When multiple acquisitions contribute to the rendered mosaic, the sidebar lists the scene acquisition times and Sentinel-2 cloud-cover values where available.
+For Sentinel layers, the modal also searches contributing scenes near the selected date. When multiple acquisitions contribute to the rendered mosaic, the sidebar lists the scene acquisition times and Sentinel-2 cloud-cover values where available. Hovering or focusing a listed Sentinel scene can highlight that scene's footprint over the rendered mosaic when geometry is available, which helps connect mosaic seams back to contributing acquisitions.
 
 ## Data Sources
 
@@ -110,7 +111,7 @@ The globe fetches supporting context directly in the browser:
 - NASA EONET open volcano events
 - NASA EONET open severe-storm events, rendered as tracks when point history is available
 
-These overlays are optional UI toggles. If a feed fails, the corresponding overlay simply renders no markers.
+These overlays are optional UI toggles. If a feed fails, the corresponding overlay simply renders no markers. Earthquake markers retain magnitude, depth, place, event time, update time, status, alert, and USGS links where available. EONET volcano and storm markers retain titles, geometry dates, source links, open/closed status, and storm intensity/track metadata where available. EONET volcano geometry dates are event observation/reporting dates, not verified last-eruption dates.
 
 ### AI View Analysis
 
@@ -193,7 +194,9 @@ npm run lint     # Run ESLint
 - Scroll or pinch to zoom.
 - Use the imagery panel or number keys to switch available base layers.
 - Add GIBS analytic overlays from the overlay selector, reorder them, remove them, or clear the overlay stack.
+- Hover overlay candidates to read a dark summary card before adding them, and watch overlay rows for loading/loaded status.
 - Toggle activity overlays for earthquakes, volcanoes, and storms.
+- Hover activity markers for event details. Earthquake marker color tracks magnitude, volcanoes use a distinct X marker, and storm tracks show the latest storm head.
 - At max zoom, the app replaces the globe view with a higher-detail WMS image for the current viewport.
 - Shift-click or right-click the globe or max-zoom image to select a point and open the imagery modal.
 - Use max-zoom drag gestures to pan the detailed overlay before selecting a point.
@@ -207,6 +210,7 @@ npm run lint     # Run ESLint
 - Use number keys to switch layers while the modal is open.
 - Use 7-day and 30-day time-lapse controls for daily GIBS imagery.
 - Use 7-mosaic, 30-mosaic, and five-year sampled time-lapse controls for Sentinel imagery.
+- Hover listed Sentinel scenes to highlight the scene footprint on the rendered mosaic when geometry is available.
 - Download Sentinel time-lapse sequences as GIFs.
 - Close the modal to restore the globe's previous date, layer, manual-selection state, and overlay stack.
 
@@ -261,9 +265,13 @@ Sentinel layers are listed first in the modal layer switcher. They require Coper
 
 `src/components/Globe/Globe.tsx` owns the Three.js canvas. It builds a global NASA GIBS texture URL for globe-capable providers, renders the Earth sphere, applies optional transparent GIBS overlay textures, mounts boundary/city/event overlays, and reports camera-derived viewport information back to the Zustand store. Regional-only Sentinel providers keep the globe on a default global true-color texture while the regional modal renders the selected Sentinel layer.
 
+Globe camera controls adapt interaction speed by camera distance. Scroll zoom and drag/pan slow down near the globe surface so close exploration is less sensitive, while wider globe navigation remains responsive.
+
 `src/components/Globe/MaxZoomImagery.tsx` listens for max-zoom globe state. When the camera is close enough, it requests a WMS image for the visible bounding box and presents it as a 2D overlay. This allows clearer local inspection than stretching the global sphere texture.
 
-`src/components/Globe/CameraHotkeys.tsx` owns the floating imagery panel, number-key layer switching, GIBS overlay stack controls, and activity overlay toggles.
+`src/components/Globe/CameraHotkeys.tsx` owns the floating imagery panel, number-key layer switching, GIBS overlay stack controls, and activity overlay toggles. It separates base imagery from analytic overlays by using `overlayOnly`, displays overlay texture load status, and renders dark readable hover summaries for overlay candidates.
+
+`src/components/Globe/EventOverlays/` owns activity feeds and marker behavior. `ActivityCrosshair.tsx` renders dark-stroked marker shapes and invisible square hit targets, `activityHoverStore.ts` tracks the active marker, `ActivityHoverPopup.tsx` renders feed metadata over the globe, and `eventDetails.ts` centralizes event date/age formatting.
 
 ### Selection And Modal State
 
@@ -273,6 +281,7 @@ Sentinel layers are listed first in the modal layer switcher. They require Coper
 - current globe viewport
 - active imagery layer
 - active GIBS overlay layers
+- overlay load statuses
 - activity overlay toggles
 - selected date
 - modal open/closed state

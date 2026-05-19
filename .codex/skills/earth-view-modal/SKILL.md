@@ -25,8 +25,8 @@ The modal temporarily changes global app state. On first open, `selectPoint` sto
 
 ## Core Files
 
-- `src/components/Modal/ImageryModal.tsx`: dialog layout, image pane, sidebar, provider metadata, scene list, time-lapse buttons, layer/date controls, hidden Ask View gate.
-- `src/components/Modal/hooks/useRegionalImagery.ts`: bbox math, preview zoom, drag/pan commit, image cache, Sentinel scene lookup, fallback bbox behavior.
+- `src/components/Modal/ImageryModal.tsx`: dialog layout, image pane, sidebar, provider metadata, scene list and scene footprint hover, time-lapse buttons, layer/date controls, hidden Ask View gate.
+- `src/components/Modal/hooks/useRegionalImagery.ts`: bbox math, preview zoom, drag/pan commit, image cache, Sentinel scene lookup, Sentinel scene geometries, fallback bbox behavior.
 - `src/components/Modal/hooks/useTimeLapse.ts`: daily GIBS sequences, Sentinel scene search, Sentinel render concurrency, five-year sampled comparison, time-lapse cache.
 - `src/components/Modal/TimeLapseModal.tsx`: playback UI, frame list, animated GIF export.
 - `src/components/Modal/LayerSwitcher.tsx`: modal provider list, Sentinel-first order via `modalImageryProviders`.
@@ -41,6 +41,7 @@ Preserve these behaviors unless the user asks to change them:
 
 - Drag pans the regional image and commits a new selected center on pointer up.
 - Scroll zooms by updating preview zoom immediately, then committing `imageryZoomDegrees` after a short delay.
+- Pending zoom commits are flushed before drag/recenter commits, and retained pan is rescaled when preview zoom changes. This keeps rapid zoom/drag/zoom sequences from anchoring on stale loaded imagery.
 - Shift-click recenters without leaving the modal.
 - Number keys switch modal layers unless the user is typing in an input-like element.
 - Existing imagery can remain visible while Sentinel positioning/resolution updates are pending.
@@ -52,6 +53,7 @@ For Sentinel providers:
 
 - `useRegionalImagery` fetches `/api/sentinel-scenes` for contributing scenes and `/api/sentinel-image` through the provider.
 - The sidebar lists scene acquisitions only when more than one scene contributes.
+- Scene rows can expose Sentinel scene geometries. Hover/focus scene rows in `ImageryModal.tsx` may draw a green footprint overlay over the mosaic so users can connect mosaic regions to contributing scenes.
 - Capture labels prefer exact scene acquisition times when scene data exists.
 - Interaction-triggered Sentinel reloads are delayed by `SENTINEL_INTERACTION_LOAD_DELAY_MS`.
 - Time lapses use scene searches, distinct scene dates, limited render concurrency, and cached frames.
@@ -77,6 +79,8 @@ For a modal layout/control change, edit `ImageryModal.tsx` first, then move beha
 
 For pan, zoom, selection, or bbox changes, work in `useRegionalImagery.ts` and check how max-zoom `imageryView` from `MaxZoomImagery` affects `bboxForPoint`.
 
+For scene footprint display, check both the `/api/sentinel-scenes` response shape and the modal overlay math. Scene geometry coordinates should flow through `useRegionalImagery.ts` and be projected in `ImageryModal.tsx`; avoid guessing footprints from scene timestamps alone.
+
 For time-lapse changes, work in `useTimeLapse.ts` and `TimeLapseModal.tsx`; keep GIBS daily sequences and Sentinel scene sequences separate.
 
 For layer list changes, prefer changing provider metadata/order in `src/providers/registry.ts` rather than hard-coding modal UI behavior.
@@ -93,7 +97,9 @@ For user-facing modal changes, manually inspect:
 
 - modal opening from globe and max-zoom overlay
 - drag pan, scroll zoom, shift-click recenter
+- rapid scroll/drag/scroll sequences while a regional image reload is pending
 - date picker and layer switching
+- Sentinel scene list hover/focus footprint overlay when multiple scenes contribute
 - GIBS 7-day/30-day time lapse
 - Sentinel layer load/error state if credentials are available
 - Sentinel GIF export if time-lapse behavior changed

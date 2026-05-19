@@ -40,6 +40,7 @@ Keep shared logic in `src/server/*`; keep `api/*` wrappers thin.
 - Sentinel Catalog searches.
 - Sentinel-2 cloud filtering above 60 percent.
 - scene de-duplication by acquisition minute.
+- scene geometry/footprint fields used by the modal scene hover overlay.
 
 Important constraints:
 
@@ -86,7 +87,7 @@ Never expose these credentials in client-side code.
 
 For a Sentinel image-rendering bug, inspect `SentinelProvider.ts` request shape, then `fetchSentinelImage`.
 
-For a Sentinel scene-list or time-lapse bug, inspect `/api/sentinel-scenes`, `fetchSentinelScenes`, and `useTimeLapse.ts`.
+For a Sentinel scene-list, scene-footprint, or time-lapse bug, inspect `/api/sentinel-scenes`, `fetchSentinelScenes`, `useRegionalImagery.ts`, and `useTimeLapse.ts`.
 
 For local-only endpoint behavior, inspect `vite.config.ts` middleware before touching `api/*`.
 

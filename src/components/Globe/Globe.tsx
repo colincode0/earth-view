@@ -11,6 +11,7 @@ import { latLonToVector, normalizeLongitude, pointToLatLon } from "@/lib/geo";
 import { BoundaryLines } from "./BoundaryLines";
 import { CityLabels } from "./CityLabels";
 import { Earth, PlaceholderEarth } from "./Earth";
+import { ActivityHoverPopup } from "./EventOverlays/ActivityHoverPopup";
 import { EarthquakeMarkers } from "./EventOverlays/EarthquakeMarkers";
 import { StormTracks } from "./EventOverlays/StormTracks";
 import { VolcanoMarkers } from "./EventOverlays/VolcanoMarkers";
@@ -252,6 +253,7 @@ export function Globe() {
         {activityOverlays.earthquakes ? <EarthquakeMarkers /> : null}
         {activityOverlays.volcanoes ? <VolcanoMarkers /> : null}
         {activityOverlays.storms ? <StormTracks /> : null}
+        <ActivityHoverPopup />
         <AdaptiveControls />
       </Canvas>
       {imageryVisible && globeLoading && (

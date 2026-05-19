@@ -46,6 +46,7 @@ For a new GIBS overlay:
 2. Set `overlayOnly: true`.
 3. Use `fixedDate` when the product should ignore the user-selected date.
 4. Confirm it is excluded from base-layer lists and available in the overlay selector.
+5. Confirm `CameraHotkeys.tsx` still filters overlay candidates with `provider.overlayOnly && provider.layerId`, and that the overlay row shows loading/loaded status after the texture URL changes.
 
 GIBS WMS URLs are built in EPSG:4326 by `GibsProvider.ts`. Keep bbox ordering consistent with the existing `bboxParam` implementation.
 
@@ -83,6 +84,7 @@ For UI labels:
 ## Common Traps
 
 - Do not put `overlayOnly` layers into base-layer behavior by accident.
+- Do not put base imagery layers into overlay selector behavior by accident; the overlay menu is for analytic/data overlays only.
 - Do not add Sentinel providers without matching `sentinelVariants` entries.
 - Do not assume credentials exist during local verification.
 - Keep provider ids stable; they are stored in app state and used by UI controls.

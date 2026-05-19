@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { latLonToVector } from "@/lib/geo";
 import { ActivityCrosshair } from "./ActivityCrosshair";
+import {
+  formatCoordinate,
+  formatEventAge,
+  formatEventDate,
+} from "./eventDetails";
 import { fetchJsonCached } from "./eventFetch";
+import type { ActivityMarkerDetail } from "./activityHoverStore";
 
 const EONET_VOLCANOES_URL =
   "https://eonet.gsfc.nasa.gov/api/v3/events?category=volcanoes&status=open&limit=100";
@@ -10,12 +16,18 @@ const MARKER_RADIUS = 1.012;
 
 type EonetGeometry = {
   date: string;
+  magnitudeUnit?: string | null;
+  magnitudeValue?: number | null;
   type: "Point" | "Polygon";
   coordinates: number[] | number[][][];
 };
 
 type EonetEvent = {
+  closed: string | null;
+  description: string | null;
   id: string;
+  link: string;
+  sources: { id: string; url: string }[];
   title: string;
   geometry: EonetGeometry[];
 };
@@ -28,6 +40,7 @@ type Volcano = {
   id: string;
   lat: number;
   lon: number;
+  detail: ActivityMarkerDetail;
 };
 
 function latestPointGeometry(geometries: EonetGeometry[]) {
@@ -36,7 +49,7 @@ function latestPointGeometry(geometries: EonetGeometry[]) {
     if (geometry.type === "Point" && Array.isArray(geometry.coordinates)) {
       const [lon, lat] = geometry.coordinates as number[];
       if (typeof lat === "number" && typeof lon === "number") {
-        return { lat, lon };
+        return { ...geometry, lat, lon };
       }
     }
   }
@@ -57,7 +70,47 @@ export function VolcanoMarkers() {
         for (const event of feed.events) {
           const point = latestPointGeometry(event.geometry);
           if (!point) continue;
-          next.push({ id: event.id, lat: point.lat, lon: point.lon });
+          const observedAt = formatEventDate(point.date, { dateOnly: true });
+          const recency = formatEventAge(point.date);
+          const source = event.sources[0];
+          const rows: ActivityMarkerDetail["rows"] = [
+            {
+              label: "Location",
+              value: `${formatCoordinate(point.lat, ["N", "S"])}, ${formatCoordinate(point.lon, ["E", "W"])}`,
+            },
+            { label: "Status", value: event.closed ? "Closed" : "Open" },
+          ];
+
+          if (point.magnitudeValue !== null && point.magnitudeValue !== undefined) {
+            rows.push({
+              label: "Magnitude",
+              value: `${point.magnitudeValue}${point.magnitudeUnit ? ` ${point.magnitudeUnit}` : ""}`,
+            });
+          }
+
+          if (event.closed) {
+            const closedAt = formatEventDate(event.closed, { dateOnly: true });
+            if (closedAt) {
+              rows.push({ label: "Closed", value: closedAt });
+            }
+          }
+
+          next.push({
+            id: event.id,
+            lat: point.lat,
+            lon: point.lon,
+            detail: {
+              id: event.id,
+              kind: "Volcano",
+              title: event.title,
+              subtitle: event.description ?? undefined,
+              occurredAt: observedAt ? `Observed ${observedAt}` : undefined,
+              recency: recency ?? undefined,
+              sourceLabel: source?.id ?? "NASA EONET",
+              sourceUrl: source?.url ?? event.link,
+              rows,
+            },
+          });
         }
         setVolcanoes(next);
       })
@@ -76,6 +129,7 @@ export function VolcanoMarkers() {
         const position = latLonToVector(volcano.lat, volcano.lon, MARKER_RADIUS);
         return {
           id: volcano.id,
+          detail: volcano.detail,
           position: [position.x, position.y, position.z] as [number, number, number],
         };
       }),
@@ -85,7 +139,13 @@ export function VolcanoMarkers() {
   return (
     <group>
       {markers.map((marker) => (
-        <ActivityCrosshair key={marker.id} color="#ff6b35" position={marker.position} />
+        <ActivityCrosshair
+          key={marker.id}
+          color="#ff6b35"
+          detail={marker.detail}
+          position={marker.position}
+          variant="volcano"
+        />
       ))}
     </group>
   );
