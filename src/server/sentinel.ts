@@ -49,6 +49,7 @@ type CatalogResponse = {
 };
 
 let tokenCache: { token: string; expiresAt: number } | null = null;
+let tokenRequest: Promise<string> | null = null;
 
 export class SentinelError extends Error {
   status: number;
@@ -79,32 +80,44 @@ async function getAccessToken(env: SentinelEnv) {
     return tokenCache.token;
   }
 
-  const { clientId, clientSecret } = getCredentials(env);
-  const body = new URLSearchParams({
-    grant_type: "client_credentials",
-    client_id: clientId,
-    client_secret: clientSecret,
-  });
-
-  const response = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body,
-  });
-
-  if (!response.ok) {
-    throw new SentinelError("Could not authenticate with Copernicus Data Space.", 502);
+  if (tokenRequest) {
+    return tokenRequest;
   }
 
-  const token = (await response.json()) as TokenResponse;
-  tokenCache = {
-    token: token.access_token,
-    expiresAt: Date.now() + (token.expires_in ?? 600) * 1000,
-  };
+  tokenRequest = (async () => {
+    const { clientId, clientSecret } = getCredentials(env);
+    const body = new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
 
-  return tokenCache.token;
+    const response = await fetch(TOKEN_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body,
+    });
+
+    if (!response.ok) {
+      throw new SentinelError("Could not authenticate with Copernicus Data Space.", 502);
+    }
+
+    const token = (await response.json()) as TokenResponse;
+    tokenCache = {
+      token: token.access_token,
+      expiresAt: Date.now() + (token.expires_in ?? 600) * 1000,
+    };
+
+    return tokenCache.token;
+  })();
+
+  try {
+    return await tokenRequest;
+  } finally {
+    tokenRequest = null;
+  }
 }
 
 function dateWindow(date: string, requestWindowDays: number) {

@@ -1,5 +1,13 @@
 import { LoaderCircle, MapPinned } from "lucide-react";
-import { type MouseEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type MouseEvent,
+  type PointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { cityLabels } from "@/lib/cities";
 import {
   bboxWidthKm,
@@ -77,6 +85,7 @@ export function MaxZoomImagery() {
   const selectPoint = useAppStore((state) => state.selectPoint);
   const paneRef = useRef<HTMLDivElement>(null);
   const imageCacheRef = useRef(new Map<string, string>());
+  const objectUrlsRef = useRef(new Set<string>());
   const cacheScopeRef = useRef<string | null>(null);
   const visibleScopeRef = useRef<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -129,6 +138,34 @@ export function MaxZoomImagery() {
     );
   }, [labelBbox]);
 
+  const createImageUrl = useCallback((result: string | Blob) => {
+    if (typeof result === "string") {
+      return result;
+    }
+
+    const url = URL.createObjectURL(result);
+    objectUrlsRef.current.add(url);
+    return url;
+  }, []);
+
+  const revokeImageUrl = useCallback((url?: string | null) => {
+    if (!url?.startsWith("blob:")) {
+      return;
+    }
+
+    if (objectUrlsRef.current.delete(url)) {
+      URL.revokeObjectURL(url);
+    }
+  }, []);
+
+  const clearImageCache = useCallback(() => {
+    for (const cachedUrl of imageCacheRef.current.values()) {
+      revokeImageUrl(cachedUrl);
+    }
+
+    imageCacheRef.current.clear();
+  }, [revokeImageUrl]);
+
   useEffect(() => {
     let animationFrame = 0;
 
@@ -160,7 +197,7 @@ export function MaxZoomImagery() {
     const nextVisibleScope = cacheKey;
 
     if (cacheScopeRef.current !== nextCacheScope) {
-      imageCacheRef.current.clear();
+      clearImageCache();
       cacheScopeRef.current = nextCacheScope;
     }
 
@@ -196,10 +233,17 @@ export function MaxZoomImagery() {
           return;
         }
 
-        const nextImageUrl = typeof result === "string" ? result : URL.createObjectURL(result);
-        await preloadImage(nextImageUrl);
+        const nextImageUrl = createImageUrl(result);
+
+        try {
+          await preloadImage(nextImageUrl);
+        } catch (error) {
+          revokeImageUrl(nextImageUrl);
+          throw error;
+        }
 
         if (cancelled) {
+          revokeImageUrl(nextImageUrl);
           return;
         }
 
@@ -220,7 +264,21 @@ export function MaxZoomImagery() {
     return () => {
       cancelled = true;
     };
-  }, [activeBboxKey, cacheScope, date, imageHeight, imageWidth, isVisible, provider, requestBbox]);
+  }, [
+    activeBboxKey,
+    cacheScope,
+    clearImageCache,
+    createImageUrl,
+    date,
+    imageHeight,
+    imageWidth,
+    isVisible,
+    provider,
+    requestBbox,
+    revokeImageUrl,
+  ]);
+
+  useEffect(() => clearImageCache, [clearImageCache]);
 
   useEffect(() => {
     if (globeView?.atMaxZoom) {

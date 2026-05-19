@@ -45,6 +45,7 @@ type SentinelSceneResponse = {
 
 const REGIONAL_SCENES_LIMIT = 30;
 const SENTINEL_INTERACTION_LOAD_DELAY_MS = 500;
+const MAX_REGIONAL_IMAGE_CACHE_ENTRIES = 12;
 
 function imageryErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Imagery unavailable for this selection.";
@@ -161,6 +162,7 @@ export function useRegionalImagery({
   setImageryZoomDegrees,
   recenterPoint,
   createObjectUrl,
+  revokeObjectUrl,
 }: RegionalImageryOptions) {
   const imageScopeRef = useRef<string | null>(null);
   const imageCacheRef = useRef(new Map<string, CachedRegionalImage>());
@@ -235,6 +237,39 @@ export function useRegionalImagery({
     setRequestNonce((nonce) => nonce + 1);
   }, [invalidatePendingImageRequest]);
 
+  const revokeCachedRegionalImage = useCallback(
+    (image?: CachedRegionalImage | null) => {
+      revokeObjectUrl(image?.imageUrl);
+    },
+    [revokeObjectUrl],
+  );
+
+  const cacheRegionalImage = useCallback(
+    (key: string, image: CachedRegionalImage) => {
+      const existingImage = imageCacheRef.current.get(key);
+
+      if (existingImage && existingImage.imageUrl !== image.imageUrl) {
+        revokeCachedRegionalImage(existingImage);
+      }
+
+      imageCacheRef.current.delete(key);
+      imageCacheRef.current.set(key, image);
+
+      while (imageCacheRef.current.size > MAX_REGIONAL_IMAGE_CACHE_ENTRIES) {
+        const oldestKey = imageCacheRef.current.keys().next().value;
+
+        if (!oldestKey) {
+          break;
+        }
+
+        const oldestImage = imageCacheRef.current.get(oldestKey);
+        imageCacheRef.current.delete(oldestKey);
+        revokeCachedRegionalImage(oldestImage);
+      }
+    },
+    [revokeCachedRegionalImage],
+  );
+
   function clearPendingZoomCommit() {
     if (zoomCommitTimerRef.current === null) {
       return false;
@@ -257,6 +292,7 @@ export function useRegionalImagery({
 
     let cancelled = false;
     let loadTimer: number | null = null;
+    const abortController = new AbortController();
     const requestVersion = requestVersionRef.current;
     const requestZoomDegrees = imageryZoomDegrees;
     const requestBbox = bbox;
@@ -290,6 +326,8 @@ export function useRegionalImagery({
     }
 
     if (cachedImageUrl) {
+      imageCacheRef.current.delete(cacheKey);
+      imageCacheRef.current.set(cacheKey, cachedImageUrl);
       setManagedImage(cachedImageUrl);
       setLoadedImageZoomDegrees(requestZoomDegrees);
       setPreviewZoomDegrees(requestZoomDegrees);
@@ -307,6 +345,7 @@ export function useRegionalImagery({
 
     async function resolveContributingScenes(
       requestBbox: NonNullable<typeof bbox>,
+      signal: AbortSignal,
     ): Promise<SceneAcquisition[]> {
       if (!provider.sentinelVariantId) {
         return [];
@@ -325,6 +364,7 @@ export function useRegionalImagery({
           limit: REGIONAL_SCENES_LIMIT,
           lookbackDays: variant.requestWindowDays,
         }),
+        signal,
       });
 
       if (!response.ok) {
@@ -347,18 +387,25 @@ export function useRegionalImagery({
         }));
     }
 
-    async function loadRegionalImage(requestBbox: NonNullable<typeof bbox>) {
+    async function loadRegionalImage(requestBbox: NonNullable<typeof bbox>, signal: AbortSignal) {
       const [result, scenes] = await Promise.all([
         provider.fetchImage({
           bbox: requestBbox,
           date,
+          signal,
           width: regionalImageWidth,
           height: regionalImageHeight,
         }),
-        resolveContributingScenes(requestBbox).catch(() => [] as SceneAcquisition[]),
+        resolveContributingScenes(requestBbox, signal).catch(() => [] as SceneAcquisition[]),
       ]);
       const nextImageUrl = typeof result === "string" ? result : createObjectUrl(result);
-      await preloadImage(nextImageUrl);
+
+      try {
+        await preloadImage(nextImageUrl);
+      } catch (error) {
+        revokeObjectUrl(nextImageUrl);
+        throw error;
+      }
 
       return {
         imageUrl: nextImageUrl,
@@ -371,14 +418,15 @@ export function useRegionalImagery({
         return;
       }
 
-      loadRegionalImage(requestBbox)
+      loadRegionalImage(requestBbox, abortController.signal)
         .then(async (result) => {
           if (cancelled || dragActiveRef.current || requestVersion !== requestVersionRef.current) {
+            revokeCachedRegionalImage(result);
             return;
           }
 
           setManagedImage(result);
-          imageCacheRef.current.set(cacheKey, result);
+          cacheRegionalImage(cacheKey, result);
           setLoadedImageZoomDegrees(requestZoomDegrees);
           setPreviewZoomDegrees(requestZoomDegrees);
           setRegionalPan({ x: 0, y: 0 });
@@ -400,17 +448,22 @@ export function useRegionalImagery({
           }
 
           try {
-            const fallbackImageUrl = await loadRegionalImage(fallbackBbox);
+            const fallbackImageUrl = await loadRegionalImage(
+              fallbackBbox,
+              abortController.signal,
+            );
 
             if (!cancelled && !dragActiveRef.current && requestVersion === requestVersionRef.current) {
               setManagedImage(fallbackImageUrl);
-              imageCacheRef.current.set(cacheKey, fallbackImageUrl);
+              cacheRegionalImage(cacheKey, fallbackImageUrl);
               setLoadedImageZoomDegrees(requestZoomDegrees);
               setPreviewZoomDegrees(requestZoomDegrees);
               setRegionalPan({ x: 0, y: 0 });
               setCommittedRegionalPan({ x: 0, y: 0 });
               setImageLoading(false);
               setManagedUpdateReason(null);
+            } else {
+              revokeCachedRegionalImage(fallbackImageUrl);
             }
           } catch {
             if (!cancelled && !dragActiveRef.current && requestVersion === requestVersionRef.current) {
@@ -430,12 +483,14 @@ export function useRegionalImagery({
 
     return () => {
       cancelled = true;
+      abortController.abort();
       if (loadTimer !== null) {
         window.clearTimeout(loadTimer);
       }
     };
   }, [
     bbox,
+    cacheRegionalImage,
     createObjectUrl,
     date,
     fallbackBbox,
@@ -450,6 +505,8 @@ export function useRegionalImagery({
     selectedLon,
     setManagedImage,
     setManagedUpdateReason,
+    revokeCachedRegionalImage,
+    revokeObjectUrl,
   ]);
 
   useEffect(() => {

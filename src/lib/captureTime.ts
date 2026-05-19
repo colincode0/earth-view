@@ -84,22 +84,25 @@ const SENTINEL_CAPTURE_TIMING: Record<string, CaptureTiming> = {
   },
 };
 
+const BROWSER_LOCAL_TIME_FORMATTER = new Intl.DateTimeFormat("en", {
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+const EXACT_CAPTURE_DATE_FORMATTER = new Intl.DateTimeFormat("en", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+
 function formatBrowserLocalTime(date: Date) {
-  return new Intl.DateTimeFormat("en", {
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  }).format(date);
+  return BROWSER_LOCAL_TIME_FORMATTER.format(date);
 }
 
 export function formatExactCaptureTime(value: string) {
   const date = new Date(value);
 
-  return `${new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(date)} · ${formatBrowserLocalTime(date)}`;
+  return `${EXACT_CAPTURE_DATE_FORMATTER.format(date)} · ${formatBrowserLocalTime(date)}`;
 }
 
 export function formatSceneAcquisition(scene: {

@@ -37,6 +37,10 @@ export function CityLabels() {
   );
 
   useFrame(({ camera }) => {
+    if (modalOpen || atMaxZoom) {
+      return;
+    }
+
     const distance = camera.position.length();
     const maxTier = visibleTier(distance);
 

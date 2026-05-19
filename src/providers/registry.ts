@@ -213,6 +213,8 @@ export const modalImageryProviders = [
   ...imageryProviders.filter((provider) => !provider.sentinelVariantId),
 ];
 
+const imageryProviderById = new Map(imageryProviders.map((provider) => [provider.id, provider]));
+
 export function getImageryProvider(id: string) {
-  return imageryProviders.find((provider) => provider.id === id) ?? imageryProviders[0];
+  return imageryProviderById.get(id) ?? imageryProviders[0];
 }

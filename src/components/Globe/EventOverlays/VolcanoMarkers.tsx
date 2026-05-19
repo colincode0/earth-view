@@ -40,8 +40,16 @@ type Volcano = {
   id: string;
   lat: number;
   lon: number;
+  recencyDate: string;
   detail: ActivityMarkerDetail;
 };
+
+type ProcessedVolcanoCache = {
+  expiresAt: number;
+  promise: Promise<Volcano[]>;
+};
+
+let processedVolcanoCache: ProcessedVolcanoCache | null = null;
 
 function latestPointGeometry(geometries: EonetGeometry[]) {
   for (let index = geometries.length - 1; index >= 0; index -= 1) {
@@ -56,62 +64,103 @@ function latestPointGeometry(geometries: EonetGeometry[]) {
   return null;
 }
 
+function processVolcanoFeed(feed: EonetResponse) {
+  const next: Volcano[] = [];
+
+  for (const event of feed.events) {
+    const point = latestPointGeometry(event.geometry);
+    if (!point) continue;
+    const observedAt = formatEventDate(point.date, { dateOnly: true });
+    const recency = formatEventAge(point.date);
+    const source = event.sources[0];
+    const rows: ActivityMarkerDetail["rows"] = [
+      {
+        label: "Location",
+        value: `${formatCoordinate(point.lat, ["N", "S"])}, ${formatCoordinate(point.lon, ["E", "W"])}`,
+      },
+      { label: "Status", value: event.closed ? "Closed" : "Open" },
+    ];
+
+    if (point.magnitudeValue !== null && point.magnitudeValue !== undefined) {
+      rows.push({
+        label: "Magnitude",
+        value: `${point.magnitudeValue}${point.magnitudeUnit ? ` ${point.magnitudeUnit}` : ""}`,
+      });
+    }
+
+    if (event.closed) {
+      const closedAt = formatEventDate(event.closed, { dateOnly: true });
+      if (closedAt) {
+        rows.push({ label: "Closed", value: closedAt });
+      }
+    }
+
+    next.push({
+      id: event.id,
+      lat: point.lat,
+      lon: point.lon,
+      recencyDate: point.date,
+      detail: {
+        id: event.id,
+        kind: "Volcano",
+        title: event.title,
+        subtitle: event.description ?? undefined,
+        occurredAt: observedAt ? `Observed ${observedAt}` : undefined,
+        recency: recency ?? undefined,
+        sourceLabel: source?.id ?? "NASA EONET",
+        sourceUrl: source?.url ?? event.link,
+        rows,
+      },
+    });
+  }
+
+  return next;
+}
+
+function refreshVolcanoRecency(volcanoes: Volcano[]) {
+  return volcanoes.map((volcano) => ({
+    ...volcano,
+    detail: {
+      ...volcano.detail,
+      recency: formatEventAge(volcano.recencyDate) ?? undefined,
+    },
+  }));
+}
+
+function fetchProcessedVolcanoes() {
+  const now = Date.now();
+
+  if (processedVolcanoCache && processedVolcanoCache.expiresAt > now) {
+    return processedVolcanoCache.promise.then(refreshVolcanoRecency);
+  }
+
+  const promise = fetchJsonCached<EonetResponse>(EONET_VOLCANOES_URL, TTL_MS)
+    .then(processVolcanoFeed)
+    .catch((error: unknown) => {
+      if (processedVolcanoCache?.promise === promise) {
+        processedVolcanoCache = null;
+      }
+
+      throw error;
+    });
+
+  processedVolcanoCache = {
+    promise,
+    expiresAt: now + TTL_MS,
+  };
+
+  return promise.then(refreshVolcanoRecency);
+}
+
 export function VolcanoMarkers() {
   const [volcanoes, setVolcanoes] = useState<Volcano[]>([]);
 
   useEffect(() => {
     let cancelled = false;
 
-    fetchJsonCached<EonetResponse>(EONET_VOLCANOES_URL, TTL_MS)
-      .then((feed) => {
+    fetchProcessedVolcanoes()
+      .then((next) => {
         if (cancelled) return;
-
-        const next: Volcano[] = [];
-        for (const event of feed.events) {
-          const point = latestPointGeometry(event.geometry);
-          if (!point) continue;
-          const observedAt = formatEventDate(point.date, { dateOnly: true });
-          const recency = formatEventAge(point.date);
-          const source = event.sources[0];
-          const rows: ActivityMarkerDetail["rows"] = [
-            {
-              label: "Location",
-              value: `${formatCoordinate(point.lat, ["N", "S"])}, ${formatCoordinate(point.lon, ["E", "W"])}`,
-            },
-            { label: "Status", value: event.closed ? "Closed" : "Open" },
-          ];
-
-          if (point.magnitudeValue !== null && point.magnitudeValue !== undefined) {
-            rows.push({
-              label: "Magnitude",
-              value: `${point.magnitudeValue}${point.magnitudeUnit ? ` ${point.magnitudeUnit}` : ""}`,
-            });
-          }
-
-          if (event.closed) {
-            const closedAt = formatEventDate(event.closed, { dateOnly: true });
-            if (closedAt) {
-              rows.push({ label: "Closed", value: closedAt });
-            }
-          }
-
-          next.push({
-            id: event.id,
-            lat: point.lat,
-            lon: point.lon,
-            detail: {
-              id: event.id,
-              kind: "Volcano",
-              title: event.title,
-              subtitle: event.description ?? undefined,
-              occurredAt: observedAt ? `Observed ${observedAt}` : undefined,
-              recency: recency ?? undefined,
-              sourceLabel: source?.id ?? "NASA EONET",
-              sourceUrl: source?.url ?? event.link,
-              rows,
-            },
-          });
-        }
         setVolcanoes(next);
       })
       .catch(() => {

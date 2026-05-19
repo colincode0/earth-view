@@ -21,6 +21,7 @@ export type ImageryRequest = {
   bbox: BoundingBox;
   date: string;
   sceneDateTime?: string;
+  signal?: AbortSignal;
   width: number;
   height: number;
 };

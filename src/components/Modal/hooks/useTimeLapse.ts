@@ -39,7 +39,8 @@ export function useTimeLapse({
 }: TimeLapseOptions) {
   const sentinelTimeLapseCacheRef = useRef(new Map<string, SentinelTimeLapseCacheValue>());
   const sentinelTimeLapseScopeRef = useRef<string | null>(null);
-  const [timeLapseOpen, setTimeLapseOpen] = useState(false);
+  const timeLapseAbortRef = useRef<AbortController | null>(null);
+  const [timeLapseOpen, setTimeLapseOpenState] = useState(false);
   const [timeLapseFrames, setTimeLapseFrames] = useState<TimeLapseFrame[]>([]);
   const [timeLapseLoading, setTimeLapseLoading] = useState(false);
   const [timeLapseLoadingProgress, setTimeLapseLoadingProgress] = useState<{
@@ -58,6 +59,37 @@ export function useTimeLapse({
 
     sentinelTimeLapseCacheRef.current.clear();
   }, [revokeObjectUrl]);
+
+  const beginTimeLapseRequest = useCallback(() => {
+    timeLapseAbortRef.current?.abort();
+
+    const controller = new AbortController();
+    timeLapseAbortRef.current = controller;
+    return controller;
+  }, []);
+
+  const isCurrentTimeLapseRequest = useCallback(
+    (controller: AbortController) =>
+      timeLapseAbortRef.current === controller && !controller.signal.aborted,
+    [],
+  );
+
+  const finishTimeLapseRequest = useCallback((controller: AbortController) => {
+    if (timeLapseAbortRef.current === controller) {
+      timeLapseAbortRef.current = null;
+    }
+  }, []);
+
+  const setTimeLapseOpen = useCallback((open: boolean) => {
+    if (!open) {
+      timeLapseAbortRef.current?.abort();
+      timeLapseAbortRef.current = null;
+      setTimeLapseLoading(false);
+      setTimeLapseLoadingProgress(null);
+    }
+
+    setTimeLapseOpenState(open);
+  }, []);
 
   const getRegionalSentinelScope = useCallback(() => {
     if (!bbox || !provider.sentinelVariantId) {
@@ -86,11 +118,19 @@ export function useTimeLapse({
     getRegionalSentinelScope,
   ]);
 
+  useEffect(
+    () => () => {
+      timeLapseAbortRef.current?.abort();
+    },
+    [],
+  );
+
   async function loadTimeLapse(dayCount: 7 | 30) {
     if (!bbox) {
       return;
     }
 
+    const controller = beginTimeLapseRequest();
     const frameDates = getRecentIsoDates(date, dayCount);
     setTimeLapseMode(dayCount);
     setTimeLapseOpen(true);
@@ -104,6 +144,7 @@ export function useTimeLapse({
         const result = await provider.fetchImage({
           bbox,
           date: frameDate,
+          signal: controller.signal,
           width: 1024,
           height: 1024,
         });
@@ -121,9 +162,14 @@ export function useTimeLapse({
       .filter((frame): frame is PromiseFulfilledResult<TimeLapseFrame> => frame.status === "fulfilled")
       .map((frame) => frame.value);
 
+    if (!isCurrentTimeLapseRequest(controller)) {
+      return;
+    }
+
     setTimeLapseFrames(loadedFrames);
     setTimeLapseLoading(false);
     setTimeLapseLoadingProgress(null);
+    finishTimeLapseRequest(controller);
 
     if (loadedFrames.length === 0) {
       setTimeLapseError(`No imagery frames were available for this ${dayCount}-day view.`);
@@ -138,6 +184,7 @@ export function useTimeLapse({
     windowDate: string,
     limit: number,
     lookbackDays: number,
+    signal: AbortSignal,
   ) {
     const scenesResponse = await fetch("/api/sentinel-scenes", {
       method: "POST",
@@ -151,6 +198,7 @@ export function useTimeLapse({
         limit,
         lookbackDays,
       }),
+      signal,
     });
 
     if (!scenesResponse.ok) {
@@ -175,15 +223,21 @@ export function useTimeLapse({
     requestedCount: number,
     cacheKey: string | null,
     renderTarget: { bbox: BoundingBox; variantId: string },
+    controller: AbortController,
   ) {
     const variant = getSentinelVariant(renderTarget.variantId);
     const activeBbox = renderTarget.bbox;
     const distinctSceneDates = new Map<string, SentinelScene>();
+    const seenSceneDateTimes = new Set<string>();
     scenes
-      .filter(
-        (scene, index, allScenes) =>
-          allScenes.findIndex((candidate) => candidate.dateTime === scene.dateTime) === index,
-      )
+      .filter((scene) => {
+        if (seenSceneDateTimes.has(scene.dateTime)) {
+          return false;
+        }
+
+        seenSceneDateTimes.add(scene.dateTime);
+        return true;
+      })
       .sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime())
       .forEach((scene) => {
         distinctSceneDates.set(isoDateFromDate(new Date(scene.dateTime)), scene);
@@ -232,6 +286,7 @@ export function useTimeLapse({
               width: SENTINEL_RENDER_SIZE,
               height: SENTINEL_RENDER_SIZE,
             }),
+            signal: controller.signal,
           });
 
           if (!response.ok) {
@@ -250,13 +305,17 @@ export function useTimeLapse({
           loadedSceneFrames.sort(
             (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
           );
-          setTimeLapseFrames([...loadedSceneFrames]);
+          if (isCurrentTimeLapseRequest(controller)) {
+            setTimeLapseFrames([...loadedSceneFrames]);
+          }
         } finally {
           completedSceneRequests += 1;
-          setTimeLapseLoadingProgress({
-            loaded: completedSceneRequests,
-            total: scenesToRender.length,
-          });
+          if (isCurrentTimeLapseRequest(controller)) {
+            setTimeLapseLoadingProgress({
+              loaded: completedSceneRequests,
+              total: scenesToRender.length,
+            });
+          }
         }
       }
     }
@@ -267,6 +326,10 @@ export function useTimeLapse({
         renderNextScene,
       ),
     );
+
+    if (!isCurrentTimeLapseRequest(controller)) {
+      return;
+    }
 
     setTimeLapseFrames(loadedSceneFrames);
     setTimeLapseLoading(false);
@@ -290,6 +353,8 @@ export function useTimeLapse({
         error: nextError,
       });
     }
+
+    finishTimeLapseRequest(controller);
   }
 
   async function loadRegionalSentinelTimeLapse(dayCount: 7 | 30) {
@@ -297,6 +362,7 @@ export function useTimeLapse({
       return;
     }
 
+    const controller = beginTimeLapseRequest();
     const variant = getSentinelVariant(provider.sentinelVariantId);
     const cacheScope = getRegionalSentinelScope();
     const cacheKey = cacheScope ? `${cacheScope}|${dayCount}` : null;
@@ -310,6 +376,7 @@ export function useTimeLapse({
       setTimeLapseError(cached.error);
       setTimeLapseLoading(false);
       setTimeLapseLoadingProgress(null);
+      finishTimeLapseRequest(controller);
       return;
     }
 
@@ -325,18 +392,25 @@ export function useTimeLapse({
         date,
         SENTINEL_SCENE_SEARCH_LIMIT,
         SENTINEL_SCENE_LOOKBACK_DAYS,
+        controller.signal,
       );
       await renderSentinelTimeLapseFrames(scenes, dayCount, cacheKey, {
         bbox,
         variantId: variant.id,
-      });
+      }, controller);
     } catch (sceneError) {
+      if (!isCurrentTimeLapseRequest(controller)) {
+        return;
+      }
+
       setTimeLapseFrames([]);
       setTimeLapseLoading(false);
       setTimeLapseLoadingProgress(null);
       setTimeLapseError(
         sceneError instanceof Error ? sceneError.message : "Sentinel scene search failed.",
       );
+    } finally {
+      finishTimeLapseRequest(controller);
     }
   }
 
@@ -345,6 +419,7 @@ export function useTimeLapse({
       return;
     }
 
+    const controller = beginTimeLapseRequest();
     const variant = getSentinelVariant(provider.sentinelVariantId);
     const cacheScope = getRegionalSentinelScope();
     const cacheKey = cacheScope ? `${cacheScope}|5y` : null;
@@ -358,6 +433,7 @@ export function useTimeLapse({
       setTimeLapseError(cached.error);
       setTimeLapseLoading(false);
       setTimeLapseLoadingProgress(null);
+      finishTimeLapseRequest(controller);
       return;
     }
 
@@ -378,6 +454,7 @@ export function useTimeLapse({
           isoDateFromDate(windowEndDate),
           SENTINEL_YEAR_SCENE_SEARCH_LIMIT,
           SENTINEL_FIVE_YEAR_LOOKBACK_DAYS,
+          controller.signal,
         );
 
         selectedScenes.push(
@@ -393,14 +470,21 @@ export function useTimeLapse({
           bbox,
           variantId: variant.id,
         },
+        controller,
       );
     } catch (sceneError) {
+      if (!isCurrentTimeLapseRequest(controller)) {
+        return;
+      }
+
       setTimeLapseFrames([]);
       setTimeLapseLoading(false);
       setTimeLapseLoadingProgress(null);
       setTimeLapseError(
         sceneError instanceof Error ? sceneError.message : "Sentinel scene search failed.",
       );
+    } finally {
+      finishTimeLapseRequest(controller);
     }
   }
 

@@ -52,6 +52,7 @@ export class SentinelProvider implements ImageryProvider {
         width: params.width,
         height: params.height,
       }),
+      signal: params.signal,
     });
 
     if (!response.ok) {

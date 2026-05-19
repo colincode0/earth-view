@@ -2,6 +2,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const COMPLETE_GLOBAL_TRUE_COLOR_LAG_HOURS = 6;
 const DEFAULT_TRUE_COLOR_LAYER_ID = "viirs-noaa20";
+const LONG_DATE_FORMATTER = new Intl.DateTimeFormat("en", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
 
 export function toIsoDate(date: Date) {
   return date.toISOString().slice(0, 10);
@@ -43,12 +49,7 @@ export function getLatestTrueColorImagery(now = new Date()) {
 }
 
 export function formatLongDate(value: string) {
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(new Date(`${value}T00:00:00Z`));
+  return LONG_DATE_FORMATTER.format(new Date(`${value}T00:00:00Z`));
 }
 
 export function formatImageryDateTime(value: string) {

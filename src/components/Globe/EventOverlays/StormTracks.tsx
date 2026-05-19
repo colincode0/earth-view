@@ -41,8 +41,16 @@ type EonetResponse = {
 type StormTrack = {
   id: string;
   detail: ActivityMarkerDetail;
+  recencyDate?: string;
   points: { date: string; lat: number; lon: number; magnitudeUnit?: string | null; magnitudeValue?: number | null }[];
 };
+
+type ProcessedStormCache = {
+  expiresAt: number;
+  promise: Promise<StormTrack[]>;
+};
+
+let processedStormCache: ProcessedStormCache | null = null;
 
 function extractPointTrack(geometries: EonetGeometry[]) {
   const points: StormTrack["points"] = [];
@@ -134,6 +142,58 @@ function buildStormDetail(event: EonetEvent, points: StormTrack["points"]): Acti
   };
 }
 
+function processStormFeed(feed: EonetResponse) {
+  const next: StormTrack[] = [];
+
+  for (const event of feed.events) {
+    const points = extractPointTrack(event.geometry);
+    if (points.length === 0) continue;
+    next.push({
+      id: event.id,
+      detail: buildStormDetail(event, points),
+      recencyDate: points[points.length - 1]?.date,
+      points,
+    });
+  }
+
+  return next;
+}
+
+function refreshStormRecency(tracks: StormTrack[]) {
+  return tracks.map((track) => ({
+    ...track,
+    detail: {
+      ...track.detail,
+      recency: track.recencyDate ? formatEventAge(track.recencyDate) ?? undefined : undefined,
+    },
+  }));
+}
+
+function fetchProcessedStorms() {
+  const now = Date.now();
+
+  if (processedStormCache && processedStormCache.expiresAt > now) {
+    return processedStormCache.promise.then(refreshStormRecency);
+  }
+
+  const promise = fetchJsonCached<EonetResponse>(EONET_STORMS_URL, TTL_MS)
+    .then(processStormFeed)
+    .catch((error: unknown) => {
+      if (processedStormCache?.promise === promise) {
+        processedStormCache = null;
+      }
+
+      throw error;
+    });
+
+  processedStormCache = {
+    promise,
+    expiresAt: now + TTL_MS,
+  };
+
+  return promise.then(refreshStormRecency);
+}
+
 function buildTrackGeometry(tracks: StormTrack[]) {
   const vertices: number[] = [];
 
@@ -161,16 +221,9 @@ export function StormTracks() {
   useEffect(() => {
     let cancelled = false;
 
-    fetchJsonCached<EonetResponse>(EONET_STORMS_URL, TTL_MS)
-      .then((feed) => {
+    fetchProcessedStorms()
+      .then((next) => {
         if (cancelled) return;
-
-        const next: StormTrack[] = [];
-        for (const event of feed.events) {
-          const points = extractPointTrack(event.geometry);
-          if (points.length === 0) continue;
-          next.push({ id: event.id, detail: buildStormDetail(event, points), points });
-        }
         setTracks(next);
       })
       .catch(() => {
