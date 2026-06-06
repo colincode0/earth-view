@@ -60,6 +60,7 @@ type AppState = {
   date: string;
   layerId: string;
   imageryVisible: boolean;
+  boundaryLinesVisible: boolean;
   overlayLayerIds: string[];
   overlayLoadStatuses: Record<string, OverlayLoadStatus>;
   activityOverlays: Record<ActivityOverlayKey, boolean>;
@@ -78,6 +79,7 @@ type AppState = {
   setDate: (date: string) => void;
   setLayer: (id: string) => void;
   toggleImageryVisible: () => void;
+  toggleBoundaryLinesVisible: () => void;
   addOverlayLayer: (id: string) => void;
   removeOverlayLayer: (id: string) => void;
   moveOverlayLayer: (id: string, direction: "up" | "down") => void;
@@ -101,6 +103,7 @@ export const useAppStore = create<AppState>((set) => ({
   date: initialTrueColorImagery.date,
   layerId: initialTrueColorImagery.layerId,
   imageryVisible: true,
+  boundaryLinesVisible: true,
   overlayLayerIds: [],
   overlayLoadStatuses: {},
   activityOverlays: { earthquakes: false, volcanoes: false, storms: false },
@@ -190,6 +193,10 @@ export const useAppStore = create<AppState>((set) => ({
   toggleImageryVisible: () =>
     set((state) => ({
       imageryVisible: !state.imageryVisible,
+    })),
+  toggleBoundaryLinesVisible: () =>
+    set((state) => ({
+      boundaryLinesVisible: !state.boundaryLinesVisible,
     })),
   addOverlayLayer: (id) =>
     set((state) => {

@@ -19,8 +19,16 @@ import {
 import { getImageryProvider } from "@/providers/registry";
 import { useAppStore } from "@/store/useAppStore";
 import type { BoundingBox } from "@/types/imagery";
+import {
+  ADMIN_1_GEOJSON_URLS,
+  fetchGeoJson,
+  type GeoJsonCollection,
+  type Position,
+  WORLD_GEOJSON_URLS,
+} from "./BoundaryLines";
 
 const MAX_IMAGE_SIZE = 1800;
+const BOUNDARY_SVG_VIEWBOX_SIZE = 100;
 
 type DragStart = {
   pointerId: number;
@@ -75,11 +83,233 @@ function preloadImage(url: string) {
   });
 }
 
+function pointToSvgPoint([lon, lat]: Position, bbox: BoundingBox) {
+  const lonSpan = bbox.maxLon - bbox.minLon;
+  const latSpan = bbox.maxLat - bbox.minLat;
+
+  if (lonSpan <= 0 || latSpan <= 0) {
+    return null;
+  }
+
+  return {
+    x: ((lon - bbox.minLon) / lonSpan) * BOUNDARY_SVG_VIEWBOX_SIZE,
+    y: ((bbox.maxLat - lat) / latSpan) * BOUNDARY_SVG_VIEWBOX_SIZE,
+  };
+}
+
+function positionsToSegmentPaths(positions: Position[], bbox: BoundingBox) {
+  const paths: string[] = [];
+  const lonMargin = (bbox.maxLon - bbox.minLon) * 0.05;
+  const latMargin = (bbox.maxLat - bbox.minLat) * 0.05;
+
+  for (let index = 0; index < positions.length - 1; index += 1) {
+    const start = positions[index];
+    const end = positions[index + 1];
+    const minLon = Math.min(start[0], end[0]);
+    const maxLon = Math.max(start[0], end[0]);
+    const minLat = Math.min(start[1], end[1]);
+    const maxLat = Math.max(start[1], end[1]);
+
+    if (Math.abs(start[0] - end[0]) > 180) {
+      continue;
+    }
+
+    if (
+      maxLon < bbox.minLon - lonMargin ||
+      minLon > bbox.maxLon + lonMargin ||
+      maxLat < bbox.minLat - latMargin ||
+      minLat > bbox.maxLat + latMargin
+    ) {
+      continue;
+    }
+
+    const a = pointToSvgPoint(start, bbox);
+    const b = pointToSvgPoint(end, bbox);
+
+    if (!a || !b) {
+      continue;
+    }
+
+    paths.push(`M ${a.x.toFixed(3)} ${a.y.toFixed(3)} L ${b.x.toFixed(3)} ${b.y.toFixed(3)}`);
+  }
+
+  return paths;
+}
+
+function collectionToPaths(collection: GeoJsonCollection | null, bbox: BoundingBox) {
+  if (!collection) {
+    return [];
+  }
+
+  const paths: string[] = [];
+
+  for (const feature of collection.features) {
+    const geometry = feature.geometry;
+
+    if (!geometry) {
+      continue;
+    }
+
+    if (geometry.type === "LineString") {
+      paths.push(...positionsToSegmentPaths(geometry.coordinates, bbox));
+    }
+
+    if (geometry.type === "MultiLineString") {
+      for (const line of geometry.coordinates) {
+        paths.push(...positionsToSegmentPaths(line, bbox));
+      }
+    }
+
+    if (geometry.type === "Polygon") {
+      for (const ring of geometry.coordinates) {
+        paths.push(...positionsToSegmentPaths(ring, bbox));
+      }
+    }
+
+    if (geometry.type === "MultiPolygon") {
+      for (const polygon of geometry.coordinates) {
+        for (const ring of polygon) {
+          paths.push(...positionsToSegmentPaths(ring, bbox));
+        }
+      }
+    }
+  }
+
+  return paths;
+}
+
+function graticuleStep(span: number) {
+  if (span <= 1) return 0.25;
+  if (span <= 4) return 0.5;
+  if (span <= 12) return 1;
+  if (span <= 40) return 5;
+  return 15;
+}
+
+function buildGraticulePaths(bbox: BoundingBox) {
+  const paths: string[] = [];
+  const lonStep = graticuleStep(bbox.maxLon - bbox.minLon);
+  const latStep = graticuleStep(bbox.maxLat - bbox.minLat);
+  const minLon = Math.ceil(bbox.minLon / lonStep) * lonStep;
+  const minLat = Math.ceil(bbox.minLat / latStep) * latStep;
+
+  for (let lon = minLon; lon <= bbox.maxLon; lon += lonStep) {
+    const a = pointToSvgPoint([lon, bbox.minLat], bbox);
+    const b = pointToSvgPoint([lon, bbox.maxLat], bbox);
+    if (a && b) {
+      paths.push(`M ${a.x.toFixed(3)} ${a.y.toFixed(3)} L ${b.x.toFixed(3)} ${b.y.toFixed(3)}`);
+    }
+  }
+
+  for (let lat = minLat; lat <= bbox.maxLat; lat += latStep) {
+    const a = pointToSvgPoint([bbox.minLon, lat], bbox);
+    const b = pointToSvgPoint([bbox.maxLon, lat], bbox);
+    if (a && b) {
+      paths.push(`M ${a.x.toFixed(3)} ${a.y.toFixed(3)} L ${b.x.toFixed(3)} ${b.y.toFixed(3)}`);
+    }
+  }
+
+  return paths;
+}
+
+function DetailedBoundaryOverlay({
+  bbox,
+  pan,
+}: {
+  bbox: BoundingBox;
+  pan: { x: number; y: number };
+}) {
+  const [countryCollection, setCountryCollection] = useState<GeoJsonCollection | null>(null);
+  const [admin1Collection, setAdmin1Collection] = useState<GeoJsonCollection | null>(null);
+  const graticulePaths = useMemo(() => buildGraticulePaths(bbox), [bbox]);
+  const admin1Paths = useMemo(() => collectionToPaths(admin1Collection, bbox), [admin1Collection, bbox]);
+  const countryPaths = useMemo(() => collectionToPaths(countryCollection, bbox), [countryCollection, bbox]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchGeoJson(WORLD_GEOJSON_URLS)
+      .then((collection) => {
+        if (!cancelled) {
+          setCountryCollection(collection);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCountryCollection(null);
+        }
+      });
+
+    fetchGeoJson(ADMIN_1_GEOJSON_URLS)
+      .then((collection) => {
+        if (!cancelled) {
+          setAdmin1Collection(collection);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAdmin1Collection(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <svg
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0 z-[5]"
+      preserveAspectRatio="none"
+      viewBox={`0 0 ${BOUNDARY_SVG_VIEWBOX_SIZE} ${BOUNDARY_SVG_VIEWBOX_SIZE}`}
+      style={{
+        transform: `translate(${pan.x}px, ${pan.y}px)`,
+      }}
+    >
+      {graticulePaths.map((path, index) => (
+        <path
+          key={`graticule-${index}`}
+          d={path}
+          fill="none"
+          stroke="#ffffff"
+          strokeOpacity={0.16}
+          strokeWidth={1}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      {admin1Paths.map((path, index) => (
+        <path
+          key={`admin1-${index}`}
+          d={path}
+          fill="none"
+          stroke="#ffffff"
+          strokeOpacity={0.38}
+          strokeWidth={1}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      {countryPaths.map((path, index) => (
+        <path
+          key={`country-${index}`}
+          d={path}
+          fill="none"
+          stroke="#ffffff"
+          strokeOpacity={0.9}
+          strokeWidth={1}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+    </svg>
+  );
+}
+
 export function MaxZoomImagery() {
   const globeView = useAppStore((state) => state.globeView);
   const date = useAppStore((state) => state.date);
   const layerId = useAppStore((state) => state.layerId);
   const imageryVisible = useAppStore((state) => state.imageryVisible);
+  const boundaryLinesVisible = useAppStore((state) => state.boundaryLinesVisible);
   const modalOpen = useAppStore((state) => state.modalOpen);
   const focusGlobeAt = useAppStore((state) => state.focusGlobeAt);
   const selectPoint = useAppStore((state) => state.selectPoint);
@@ -465,6 +695,10 @@ export function MaxZoomImagery() {
             setLoading(false);
           }}
         />
+      )}
+
+      {imageUrl && boundaryLinesVisible && labelBbox && (
+        <DetailedBoundaryOverlay bbox={labelBbox} pan={pan} />
       )}
 
       {imageUrl && !modalOpen && labelBbox && visibleCityLabels.length > 0 && (

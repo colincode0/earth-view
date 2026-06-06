@@ -6,8 +6,10 @@ import {
   Eye,
   EyeOff,
   Flame,
+  Grid2x2X,
   Layers,
   LoaderCircle,
+  Map,
   Mountain,
   Wind,
   X,
@@ -41,12 +43,14 @@ export function CameraHotkeys() {
   const [hoveredOverlayId, setHoveredOverlayId] = useState<string | null>(null);
   const layerId = useAppStore((state) => state.layerId);
   const imageryVisible = useAppStore((state) => state.imageryVisible);
+  const boundaryLinesVisible = useAppStore((state) => state.boundaryLinesVisible);
   const overlayLayerIds = useAppStore((state) => state.overlayLayerIds);
   const overlayLoadStatuses = useAppStore((state) => state.overlayLoadStatuses);
   const modalOpen = useAppStore((state) => state.modalOpen);
   const atMaxZoom = useAppStore((state) => state.globeView?.atMaxZoom ?? false);
   const setLayer = useAppStore((state) => state.setLayer);
   const toggleImageryVisible = useAppStore((state) => state.toggleImageryVisible);
+  const toggleBoundaryLinesVisible = useAppStore((state) => state.toggleBoundaryLinesVisible);
   const addOverlayLayer = useAppStore((state) => state.addOverlayLayer);
   const removeOverlayLayer = useAppStore((state) => state.removeOverlayLayer);
   const moveOverlayLayer = useAppStore((state) => state.moveOverlayLayer);
@@ -149,6 +153,19 @@ export function CameraHotkeys() {
             title={imageryVisible ? "Hide base imagery" : "Show base imagery"}
           >
             {imageryVisible ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+          </button>
+          <button
+            type="button"
+            onClick={toggleBoundaryLinesVisible}
+            className={`inline-flex h-5 w-5 items-center justify-center rounded-sm border transition-colors ${
+              boundaryLinesVisible
+                ? "border-primary/60 bg-primary/20 text-foreground"
+                : "border-white/10 bg-background/50 text-muted-foreground hover:text-foreground"
+            }`}
+            aria-label={boundaryLinesVisible ? "Hide boundary lines" : "Show boundary lines"}
+            title={boundaryLinesVisible ? "Hide boundary lines" : "Show boundary lines"}
+          >
+            {boundaryLinesVisible ? <Map className="h-3 w-3" /> : <Grid2x2X className="h-3 w-3" />}
           </button>
         </div>
       </div>

@@ -28,6 +28,7 @@ const DRAG_SPEED_CURVE = 1.25;
 const MIN_ZOOM_SPEED = 0.075;
 const MAX_ZOOM_SPEED = 0.5;
 const ZOOM_SPEED_CURVE = 1.45;
+const SHIFT_WHEEL_ZOOM_MULTIPLIER = 3.5;
 const VIEW_REPORT_INTERVAL = 8;
 const INITIAL_GLOBE_TEXTURE_WIDTH = 4096;
 const DETAILED_GLOBE_TEXTURE_WIDTH = 8192;
@@ -41,6 +42,7 @@ function zoomProgressForDistance(distance: number) {
 function AdaptiveControls() {
   const controlsRef = useRef<OrbitControlsImpl>(null);
   const camera = useThree((state) => state.camera);
+  const gl = useThree((state) => state.gl);
   const focusRequest = useAppStore((state) => state.globeFocusRequest);
   const setGlobeView = useAppStore((state) => state.setGlobeView);
   const lastFocusNonce = useRef(0);
@@ -57,6 +59,34 @@ function AdaptiveControls() {
   const sphereRef = useRef(new Sphere(undefined, 1));
   const centerPointRef = useRef(new Vector2(0, 0));
   const intersectionRef = useRef(new Vector3());
+
+  useEffect(() => {
+    const element = gl.domElement;
+
+    function handleShiftWheel(event: WheelEvent) {
+      const controls = controlsRef.current;
+
+      if (!controls || !event.shiftKey || event.deltaY === 0) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      const zoomScale = Math.pow(controls.getZoomScale(), SHIFT_WHEEL_ZOOM_MULTIPLIER);
+
+      if (event.deltaY < 0) {
+        controls.dollyIn(zoomScale);
+      } else {
+        controls.dollyOut(zoomScale);
+      }
+    }
+
+    element.addEventListener("wheel", handleShiftWheel, { capture: true, passive: false });
+    return () => {
+      element.removeEventListener("wheel", handleShiftWheel, { capture: true });
+    };
+  }, [gl]);
 
   useFrame(() => {
     const controls = controlsRef.current;
@@ -163,6 +193,7 @@ export function Globe() {
   const date = useAppStore((state) => state.date);
   const layerId = useAppStore((state) => state.layerId);
   const imageryVisible = useAppStore((state) => state.imageryVisible);
+  const boundaryLinesVisible = useAppStore((state) => state.boundaryLinesVisible);
   const overlayLayerIds = useAppStore((state) => state.overlayLayerIds);
   const activityOverlays = useAppStore((state) => state.activityOverlays);
   const overlayLoadStatuses = useAppStore((state) => state.overlayLoadStatuses);
@@ -248,7 +279,7 @@ export function Globe() {
             onOverlayReady={handleOverlayReady}
           />
         </Suspense>
-        <BoundaryLines />
+        {boundaryLinesVisible ? <BoundaryLines /> : null}
         <CityLabels />
         {activityOverlays.earthquakes ? <EarthquakeMarkers /> : null}
         {activityOverlays.volcanoes ? <VolcanoMarkers /> : null}

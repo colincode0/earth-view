@@ -510,13 +510,35 @@ export function useRegionalImagery({
   ]);
 
   useEffect(() => {
+    if (!modalOpen) {
+      invalidatePendingImageRequest();
+      clearPendingZoomCommit();
+      imageScopeRef.current = null;
+      dragInvalidatedRequestRef.current = false;
+      dragActiveRef.current = false;
+      setManagedImage(null);
+      setImageLoading(false);
+      setError(null);
+      setRegionalPan({ x: 0, y: 0 });
+      setCommittedRegionalPan({ x: 0, y: 0 });
+      setRegionalDragStart(null);
+      setManagedUpdateReason(null);
+      return;
+    }
+
     if (modalOpen && !wasModalOpenRef.current) {
       setPreviewZoomDegrees(imageryZoomDegrees);
       setLoadedImageZoomDegrees(imageryZoomDegrees);
     }
 
     wasModalOpenRef.current = modalOpen;
-  }, [imageryZoomDegrees, modalOpen]);
+  }, [
+    imageryZoomDegrees,
+    invalidatePendingImageRequest,
+    modalOpen,
+    setManagedImage,
+    setManagedUpdateReason,
+  ]);
 
   useEffect(() => {
     return () => {

@@ -2,19 +2,19 @@ import { useEffect, useMemo, useState } from "react";
 import { BufferGeometry, Float32BufferAttribute } from "three";
 import { latLonToVector } from "@/lib/geo";
 
-const WORLD_GEOJSON_URLS = [
+export const WORLD_GEOJSON_URLS = [
   "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_0_countries.geojson",
   "https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson",
 ] as const;
 
-const ADMIN_1_GEOJSON_URLS = [
+export const ADMIN_1_GEOJSON_URLS = [
   "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces_lines.geojson",
   "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces.geojson",
 ] as const;
 
 const geoJsonRequestCache = new Map<string, Promise<GeoJsonCollection>>();
 
-type Position = [number, number];
+export type Position = [number, number];
 
 type LineStringGeometry = {
   type: "LineString";
@@ -36,7 +36,7 @@ type MultiPolygonGeometry = {
   coordinates: Position[][][];
 };
 
-type GeoJsonFeature = {
+export type GeoJsonFeature = {
   geometry:
     | LineStringGeometry
     | MultiLineStringGeometry
@@ -45,7 +45,7 @@ type GeoJsonFeature = {
     | null;
 };
 
-type GeoJsonCollection = {
+export type GeoJsonCollection = {
   features: GeoJsonFeature[];
 };
 
@@ -162,7 +162,7 @@ async function fetchGeoJsonUncached(urls: readonly string[]) {
   throw lastError;
 }
 
-function fetchGeoJson(urls: readonly string[]) {
+export function fetchGeoJson(urls: readonly string[]) {
   const cacheKey = urls.join("|");
   const cached = geoJsonRequestCache.get(cacheKey);
 
