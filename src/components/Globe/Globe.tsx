@@ -18,7 +18,7 @@ import { VolcanoMarkers } from "./EventOverlays/VolcanoMarkers";
 
 const MIN_GLOBE_DISTANCE = 1.06;
 const MAX_GLOBE_DISTANCE = 6;
-const MAX_ZOOM_DISTANCE = 1.085;
+const MAX_ZOOM_DISTANCE = 1.16;
 const MIN_ROTATE_SPEED = 0.012;
 const MAX_ROTATE_SPEED = 0.36;
 const MIN_PAN_SPEED = 0.018;
@@ -43,8 +43,10 @@ function AdaptiveControls() {
   const camera = useThree((state) => state.camera);
   const gl = useThree((state) => state.gl);
   const focusRequest = useAppStore((state) => state.globeFocusRequest);
+  const zoomRequest = useAppStore((state) => state.globeZoomRequest);
   const setGlobeView = useAppStore((state) => state.setGlobeView);
   const lastFocusNonce = useRef(0);
+  const lastZoomNonce = useRef(0);
   const frameCount = useRef(0);
   const lastReportedView = useRef<{
     lat: number;
@@ -106,6 +108,20 @@ function AdaptiveControls() {
       controls.update();
       controls.enableDamping = originalDamping;
       lastFocusNonce.current = focusRequest.nonce;
+    }
+
+    if (zoomRequest && zoomRequest.nonce !== lastZoomNonce.current && zoomRequest.deltaY !== 0) {
+      const zoomMultiplier = zoomRequest.shiftKey ? SHIFT_WHEEL_ZOOM_MULTIPLIER : 1;
+      const zoomScale = Math.pow(controls.getZoomScale(), zoomMultiplier);
+
+      if (zoomRequest.deltaY < 0) {
+        controls.dollyIn(zoomScale);
+      } else {
+        controls.dollyOut(zoomScale);
+      }
+
+      controls.update();
+      lastZoomNonce.current = zoomRequest.nonce;
     }
 
     const distance = camera.position.distanceTo(controls.target);
@@ -176,7 +192,7 @@ function AdaptiveControls() {
   return (
     <OrbitControls
       ref={controlsRef}
-      enablePan
+      enablePan={false}
       enableDamping
       dampingFactor={0.08}
       minDistance={MIN_GLOBE_DISTANCE}

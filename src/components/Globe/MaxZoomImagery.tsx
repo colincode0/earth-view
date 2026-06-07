@@ -87,6 +87,7 @@ export function MaxZoomImagery() {
   const overlayLayerIds = useAppStore((state) => state.overlayLayerIds);
   const modalOpen = useAppStore((state) => state.modalOpen);
   const focusGlobeAt = useAppStore((state) => state.focusGlobeAt);
+  const requestGlobeZoom = useAppStore((state) => state.requestGlobeZoom);
   const selectPoint = useAppStore((state) => state.selectPoint);
   const paneRef = useRef<HTMLDivElement>(null);
   const imageCacheRef = useRef(new Map<string, string>());
@@ -100,7 +101,6 @@ export function MaxZoomImagery() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [committedPan, setCommittedPan] = useState({ x: 0, y: 0 });
   const [dragStart, setDragStart] = useState<DragStart>(null);
-  const [isSuppressed, setIsSuppressed] = useState(false);
   const [viewportSize, setViewportSize] = useState({
     width: typeof window === "undefined" ? 1600 : window.innerWidth,
     height: typeof window === "undefined" ? 1000 : window.innerHeight,
@@ -111,7 +111,7 @@ export function MaxZoomImagery() {
   const updatingMessage = provider.loadingMessage
     ? `Updating. ${provider.loadingMessage}`
     : "Updating";
-  const isVisible = Boolean(imageryVisible && globeView?.atMaxZoom && !isSuppressed);
+  const isVisible = Boolean(imageryVisible && globeView?.atMaxZoom);
   const aspect = viewportSize.width / Math.max(viewportSize.height, 1);
   const bbox = useMemo(() => {
     if (!globeView) {
@@ -327,12 +327,6 @@ export function MaxZoomImagery() {
   useEffect(() => clearImageCache, [clearImageCache]);
 
   useEffect(() => {
-    if (globeView?.atMaxZoom) {
-      setIsSuppressed(false);
-    }
-  }, [globeView?.atMaxZoom]);
-
-  useEffect(() => {
     document.body.classList.toggle("map-dragging-modal", Boolean(dragStart));
 
     return () => {
@@ -423,9 +417,8 @@ export function MaxZoomImagery() {
       ref={paneRef}
       className="absolute inset-0 z-[5] overflow-hidden bg-transparent"
       onWheel={(event) => {
-        if (event.deltaY > 0) {
-          setIsSuppressed(true);
-        }
+        event.preventDefault();
+        requestGlobeZoom(event.deltaY, event.shiftKey);
       }}
     >
       {imageUrl && (

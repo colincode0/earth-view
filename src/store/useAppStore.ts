@@ -37,6 +37,12 @@ type GlobeFocusRequest = {
   nonce: number;
 };
 
+type GlobeZoomRequest = {
+  deltaY: number;
+  shiftKey: boolean;
+  nonce: number;
+};
+
 type ModalReturnState = {
   date: string;
   layerId: string;
@@ -55,6 +61,7 @@ type AppState = {
   selectedPoint: SelectedPoint | null;
   globeView: GlobeView | null;
   globeFocusRequest: GlobeFocusRequest | null;
+  globeZoomRequest: GlobeZoomRequest | null;
   modalOpen: boolean;
   modalReturnState: ModalReturnState | null;
   date: string;
@@ -76,6 +83,7 @@ type AppState = {
     lon: number,
     options?: { immediate?: boolean; syncView?: boolean },
   ) => void;
+  requestGlobeZoom: (deltaY: number, shiftKey?: boolean) => void;
   closeModal: () => void;
   setDate: (date: string) => void;
   setLayer: (id: string) => void;
@@ -101,6 +109,7 @@ export const useAppStore = create<AppState>((set) => ({
   selectedPoint: null,
   globeView: null,
   globeFocusRequest: null,
+  globeZoomRequest: null,
   modalOpen: false,
   modalReturnState: null,
   date: initialTrueColorImagery.date,
@@ -167,6 +176,14 @@ export const useAppStore = create<AppState>((set) => ({
             lon,
           }
         : state.globeView,
+    })),
+  requestGlobeZoom: (deltaY, shiftKey = false) =>
+    set((state) => ({
+      globeZoomRequest: {
+        deltaY,
+        shiftKey,
+        nonce: (state.globeZoomRequest?.nonce ?? 0) + 1,
+      },
     })),
   closeModal: () =>
     set((state) => {
