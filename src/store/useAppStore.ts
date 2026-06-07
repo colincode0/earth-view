@@ -97,6 +97,7 @@ type AppState = {
   clearOverlayLayers: () => void;
   toggleActivityOverlay: (key: ActivityOverlayKey) => void;
   setImageryZoomDegrees: (degrees: number) => void;
+  setRegionalView: (lat: number, lon: number, imageryZoomDegrees: number) => void;
   setOverlayLoadStatus: (id: string, status: OverlayLoadStatus) => void;
 };
 
@@ -266,6 +267,17 @@ export const useAppStore = create<AppState>((set) => ({
       activityOverlays: { ...state.activityOverlays, [key]: !state.activityOverlays[key] },
     })),
   setImageryZoomDegrees: (imageryZoomDegrees) => set({ imageryZoomDegrees }),
+  setRegionalView: (lat, lon, imageryZoomDegrees) =>
+    set((state) => ({
+      selectedPoint: state.selectedPoint
+        ? {
+            ...state.selectedPoint,
+            lat,
+            lon,
+          }
+        : { lat, lon },
+      imageryZoomDegrees,
+    })),
   setOverlayLoadStatus: (id, status) =>
     set((state) => {
       const existing = state.overlayLoadStatuses[id];

@@ -117,13 +117,15 @@ function SceneFootprintOverlay({
   bbox,
   geometries,
   pan,
-  scale,
+  scaleX,
+  scaleY,
   loading,
 }: {
   bbox: BoundingBox;
   geometries: SentinelSceneGeometry[];
   pan: { x: number; y: number };
-  scale: number;
+  scaleX: number;
+  scaleY: number;
   loading: boolean;
 }) {
   const paths = geometries
@@ -144,7 +146,7 @@ function SceneFootprintOverlay({
       preserveAspectRatio="none"
       viewBox="0 0 100 100"
       style={{
-        transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
+        transform: `translate(${pan.x}px, ${pan.y}px) scale(${scaleX}, ${scaleY})`,
         transformOrigin: "center",
         transition: loading ? "none" : "transform 160ms ease-out",
       }}
@@ -177,6 +179,7 @@ export function ImageryModal() {
     setDate,
     setLayer,
     setImageryZoomDegrees,
+    setRegionalView,
     recenterPoint,
   } = useAppStore();
   const [infoOpen, setInfoOpen] = useState(false);
@@ -202,6 +205,7 @@ export function ImageryModal() {
     imagePaneRef,
     imagePaneSize,
     setImageryZoomDegrees,
+    setRegionalView,
     recenterPoint,
     createObjectUrl,
     revokeObjectUrl,
@@ -371,9 +375,9 @@ export function ImageryModal() {
                 alt=""
                 data-testid="gibs-image"
                 draggable={false}
-                className="pointer-events-none h-full w-full select-none object-cover"
+                className="pointer-events-none h-full w-full select-none object-fill"
                 style={{
-                  transform: `translate(${regionalImagery.regionalPan.x}px, ${regionalImagery.regionalPan.y}px) scale(${regionalImagery.imagePreviewScale})`,
+                  transform: `translate(${regionalImagery.regionalPan.x}px, ${regionalImagery.regionalPan.y}px) scale(${regionalImagery.imagePreviewScaleX}, ${regionalImagery.imagePreviewScaleY})`,
                   transformOrigin: "center",
                   transition:
                     regionalImagery.regionalDragStart || regionalImagery.imageLoading
@@ -395,7 +399,8 @@ export function ImageryModal() {
                   bbox={regionalImagery.bbox}
                   geometries={hoveredScene.geometries}
                   pan={regionalImagery.regionalPan}
-                  scale={regionalImagery.imagePreviewScale}
+                  scaleX={regionalImagery.imagePreviewScaleX}
+                  scaleY={regionalImagery.imagePreviewScaleY}
                   loading={regionalImagery.regionalDragStart !== null || regionalImagery.imageLoading}
                 />
               )}

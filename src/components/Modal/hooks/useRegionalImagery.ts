@@ -15,7 +15,7 @@ import {
   zoomPercentToDegrees,
 } from "@/lib/geo";
 import { getSentinelVariant } from "@/lib/sentinelVariants";
-import type { ImageryProvider, SentinelSceneGeometry } from "@/types/imagery";
+import type { BoundingBox, ImageryProvider, SentinelSceneGeometry } from "@/types/imagery";
 import {
   bboxFromSpans,
   preloadImage,
@@ -31,6 +31,7 @@ export type SceneAcquisition = {
 type CachedRegionalImage = {
   imageUrl: string;
   scenes: SceneAcquisition[];
+  bbox: BoundingBox;
 };
 
 type SentinelSceneResponse = {
@@ -90,7 +91,14 @@ type RegionalImageryOptions = ManagedObjectUrl & {
   imagePaneRef: RefObject<HTMLDivElement | null>;
   imagePaneSize: { width: number; height: number } | null;
   setImageryZoomDegrees: (value: number) => void;
+  setRegionalView: (lat: number, lon: number, imageryZoomDegrees: number) => void;
   recenterPoint: (lat: number, lon: number) => void;
+};
+
+type RegionalView = {
+  lat: number;
+  lon: number;
+  zoomDegrees: number;
 };
 
 type RegionalDragStart = {
@@ -127,24 +135,6 @@ function scalePanForZoom(
   };
 }
 
-function scalePanForZoomAtPoint(
-  pan: { x: number; y: number },
-  previousZoomDegrees: number,
-  nextZoomDegrees: number,
-  anchor: { x: number; y: number },
-) {
-  if (nextZoomDegrees <= 0 || previousZoomDegrees === nextZoomDegrees) {
-    return pan;
-  }
-
-  const scale = previousZoomDegrees / nextZoomDegrees;
-
-  return {
-    x: pan.x * scale + anchor.x * (1 - scale),
-    y: pan.y * scale + anchor.y * (1 - scale),
-  };
-}
-
 function imageRequestSizeForPane(
   imagePaneSize: { width: number; height: number } | null,
   maxSize: number,
@@ -169,25 +159,15 @@ function bboxForPoint(
   imagePaneSize: { width: number; height: number } | null,
   zoomDegrees: number,
 ) {
-  if (selectedPoint.imageryView) {
-    const paneSize = imagePaneSize ?? {
-      width: selectedPoint.imageryView.pixelWidth,
-      height: selectedPoint.imageryView.pixelHeight,
-    };
-    const zoomScale = zoomDegrees / selectedPoint.imageryView.lonSpan;
-
-    return bboxFromSpans(
-      selectedPoint.lat,
-      selectedPoint.lon,
-      selectedPoint.imageryView.latSpan *
-        zoomScale *
-        (paneSize.height / selectedPoint.imageryView.pixelHeight),
-      selectedPoint.imageryView.lonSpan *
-        zoomScale *
-        (paneSize.width / selectedPoint.imageryView.pixelWidth),
-    );
-  }
-
+  // The bbox aspect ratio must always match the image pane's aspect ratio.
+  // The rendered <img> fills the pane (object-fill), and the blurry->sharp
+  // handoff transform (transformForBboxes) assumes the raster represents the
+  // full bbox stretched across the pane. If the bbox shape diverges from the
+  // pane shape, object-fill squashes the image (stretch/tilt) and the preview
+  // transform lands on different ground than the freshly loaded image (jump).
+  //
+  // imageryView only seeds the opening zoom level (via selectPoint setting
+  // imageryZoomDegrees); it must not influence the bbox shape here.
   const paneSize = imagePaneSize ?? DEFAULT_PANE_SIZE;
   const paneAspect = Math.max(1, paneSize.width) / Math.max(1, paneSize.height);
 
@@ -199,6 +179,45 @@ function bboxForPoint(
   );
 }
 
+function transformForBboxes({
+  imagePaneSize,
+  loadedBbox,
+  targetBbox,
+}: {
+  imagePaneSize: { width: number; height: number } | null;
+  loadedBbox: BoundingBox;
+  targetBbox: BoundingBox;
+}) {
+  const paneSize = imagePaneSize ?? DEFAULT_PANE_SIZE;
+  const loadedLatSpan = loadedBbox.maxLat - loadedBbox.minLat;
+  const loadedLonSpan = loadedBbox.maxLon - loadedBbox.minLon;
+  const targetLatSpan = targetBbox.maxLat - targetBbox.minLat;
+  const targetLonSpan = targetBbox.maxLon - targetBbox.minLon;
+
+  if (
+    loadedLatSpan <= 0 ||
+    loadedLonSpan <= 0 ||
+    targetLatSpan <= 0 ||
+    targetLonSpan <= 0
+  ) {
+    return { pan: { x: 0, y: 0 }, scaleX: 1, scaleY: 1 };
+  }
+
+  const loadedLat = (loadedBbox.minLat + loadedBbox.maxLat) / 2;
+  const loadedLon = normalizeLongitude((loadedBbox.minLon + loadedBbox.maxLon) / 2);
+  const targetLat = (targetBbox.minLat + targetBbox.maxLat) / 2;
+  const targetLon = normalizeLongitude((targetBbox.minLon + targetBbox.maxLon) / 2);
+
+  return {
+    pan: {
+      x: (normalizeLongitude(loadedLon - targetLon) / targetLonSpan) * paneSize.width,
+      y: ((targetLat - loadedLat) / targetLatSpan) * paneSize.height,
+    },
+    scaleX: loadedLonSpan / targetLonSpan,
+    scaleY: loadedLatSpan / targetLatSpan,
+  };
+}
+
 export function useRegionalImagery({
   selectedPoint,
   modalOpen,
@@ -208,6 +227,7 @@ export function useRegionalImagery({
   imagePaneRef,
   imagePaneSize,
   setImageryZoomDegrees,
+  setRegionalView,
   recenterPoint,
   createObjectUrl,
   revokeObjectUrl,
@@ -216,6 +236,7 @@ export function useRegionalImagery({
   const imageCacheRef = useRef(new Map<string, CachedRegionalImage>());
   const wasModalOpenRef = useRef(false);
   const zoomCommitTimerRef = useRef<number | null>(null);
+  const pendingZoomViewRef = useRef<RegionalView | null>(null);
   const imageUrlRef = useRef<string | null>(null);
   const requestVersionRef = useRef(0);
   const dragInvalidatedRequestRef = useRef(false);
@@ -226,6 +247,7 @@ export function useRegionalImagery({
   const [imageLoading, setImageLoading] = useState(false);
   const [requestNonce, setRequestNonce] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [loadedImageBbox, setLoadedImageBbox] = useState<BoundingBox | null>(null);
   const [previewZoomDegrees, setPreviewZoomDegrees] = useState(imageryZoomDegrees);
   const [loadedImageZoomDegrees, setLoadedImageZoomDegrees] = useState(imageryZoomDegrees);
   const [regionalPan, setRegionalPan] = useState({ x: 0, y: 0 });
@@ -267,12 +289,42 @@ export function useRegionalImagery({
   );
   const regionalImageWidth = regionalImageSize.width;
   const regionalImageHeight = regionalImageSize.height;
-  const imagePreviewScale = loadedImageZoomDegrees / previewZoomDegrees;
+  const activePreviewView = pendingZoomViewRef.current ?? (
+    selectedPoint
+      ? {
+          lat: selectedPoint.lat,
+          lon: selectedPoint.lon,
+          zoomDegrees: previewZoomDegrees,
+        }
+      : null
+  );
+  const activePreviewBbox =
+    selectedPoint && activePreviewView
+      ? bboxForPoint(
+          { ...selectedPoint, lat: activePreviewView.lat, lon: activePreviewView.lon },
+          imagePaneSize,
+          activePreviewView.zoomDegrees,
+        )
+      : previewBbox;
+  const imagePreviewTransform = loadedImageBbox && activePreviewBbox
+    ? transformForBboxes({
+        imagePaneSize,
+        loadedBbox: loadedImageBbox,
+        targetBbox: activePreviewBbox,
+      })
+    : {
+        pan: regionalPan,
+        scaleX: loadedImageZoomDegrees / previewZoomDegrees,
+        scaleY: loadedImageZoomDegrees / previewZoomDegrees,
+      };
+  const imagePreviewScaleX = imagePreviewTransform.scaleX;
+  const imagePreviewScaleY = imagePreviewTransform.scaleY;
 
   const setManagedImage = useCallback((image: CachedRegionalImage | null) => {
     imageUrlRef.current = image?.imageUrl ?? null;
     setImageUrl(image?.imageUrl ?? null);
     setAcquiredScenes(image?.scenes ?? []);
+    setLoadedImageBbox(image?.bbox ?? null);
   }, []);
 
   const setManagedUpdateReason = useCallback((reason: "positioning" | "resolution" | null) => {
@@ -331,6 +383,17 @@ export function useRegionalImagery({
     zoomCommitTimerRef.current = null;
 
     return true;
+  }
+
+  function commitPendingZoomView() {
+    const pendingView = pendingZoomViewRef.current;
+
+    if (!pendingView) {
+      return;
+    }
+
+    pendingZoomViewRef.current = null;
+    setRegionalView(pendingView.lat, pendingView.lon, pendingView.zoomDegrees);
   }
 
   useEffect(() => {
@@ -462,6 +525,7 @@ export function useRegionalImagery({
       return {
         imageUrl: nextImageUrl,
         scenes,
+        bbox: requestBbox,
       };
     }
 
@@ -565,6 +629,7 @@ export function useRegionalImagery({
     if (!modalOpen) {
       invalidatePendingImageRequest();
       clearPendingZoomCommit();
+      pendingZoomViewRef.current = null;
       imageScopeRef.current = null;
       dragInvalidatedRequestRef.current = false;
       dragActiveRef.current = false;
@@ -601,7 +666,9 @@ export function useRegionalImagery({
   }, []);
 
   function pointFromRegionalEvent(event: PointerEvent<HTMLElement>) {
-    if (!previewBbox || !selectedPoint) {
+    const eventBbox = activePreviewBbox ?? previewBbox;
+
+    if (!eventBbox || !selectedPoint) {
       return null;
     }
 
@@ -619,8 +686,8 @@ export function useRegionalImagery({
       : { x: 0, y: 0 };
     const baseX = event.clientX - rect.left - rect.width / 2 - activeDragPan.x;
     const baseY = event.clientY - rect.top - rect.height / 2 - activeDragPan.y;
-    const lonSpan = previewBbox.maxLon - previewBbox.minLon;
-    const latSpan = previewBbox.maxLat - previewBbox.minLat;
+    const lonSpan = eventBbox.maxLon - eventBbox.minLon;
+    const latSpan = eventBbox.maxLat - eventBbox.minLat;
 
     return {
       lat: clamp(selectedPoint.lat - (baseY / rect.height) * latSpan, -85, 85),
@@ -676,9 +743,14 @@ export function useRegionalImagery({
     dragInvalidatedRequestRef.current = false;
     dragActiveRef.current = false;
     setManagedUpdateReason("positioning");
-    if (clearPendingZoomCommit()) {
-      setImageryZoomDegrees(previewZoomDegrees);
+    const hadPendingZoom = clearPendingZoomCommit();
+    pendingZoomViewRef.current = null;
+
+    if (hadPendingZoom) {
+      setRegionalView(nextLat, nextLon, previewZoomDegrees);
+      return;
     }
+
     recenterPoint(nextLat, nextLon);
   }
 
@@ -748,7 +820,12 @@ export function useRegionalImagery({
     nextDegrees: number,
     event: WheelEvent<HTMLElement>,
   ) {
-    if (!selectedPoint || !previewBbox || nextDegrees === previewZoomDegrees) {
+    if (
+      !selectedPoint ||
+      !previewBbox ||
+      !loadedImageBbox ||
+      nextDegrees === previewZoomDegrees
+    ) {
       previewRegionalZoom(nextDegrees);
       return;
     }
@@ -760,6 +837,11 @@ export function useRegionalImagery({
       return;
     }
 
+    const currentView = pendingZoomViewRef.current ?? {
+      lat: selectedPoint.lat,
+      lon: selectedPoint.lon,
+      zoomDegrees: previewZoomDegrees,
+    };
     const activeDragPan = regionalDragStart
       ? {
           x: regionalPan.x - regionalDragStart.originX,
@@ -770,46 +852,60 @@ export function useRegionalImagery({
       x: event.clientX - rect.left - rect.width / 2 - activeDragPan.x,
       y: event.clientY - rect.top - rect.height / 2 - activeDragPan.y,
     };
-    const currentLatSpan = previewBbox.maxLat - previewBbox.minLat;
-    const currentLonSpan = previewBbox.maxLon - previewBbox.minLon;
+    const currentBbox = bboxForPoint(
+      { ...selectedPoint, lat: currentView.lat, lon: currentView.lon },
+      imagePaneSize,
+      currentView.zoomDegrees,
+    );
+    const currentLatSpan = currentBbox.maxLat - currentBbox.minLat;
+    const currentLonSpan = currentBbox.maxLon - currentBbox.minLon;
     const anchorLat = clamp(
-      selectedPoint.lat - (anchor.y / rect.height) * currentLatSpan,
+      currentView.lat - (anchor.y / rect.height) * currentLatSpan,
       -85,
       85,
     );
     const anchorLon = normalizeLongitude(
-      selectedPoint.lon + (anchor.x / rect.width) * currentLonSpan,
+      currentView.lon + (anchor.x / rect.width) * currentLonSpan,
     );
-    const nextBbox = bboxForPoint(selectedPoint, imagePaneSize, nextDegrees);
+    const nextBbox = bboxForPoint(
+      { ...selectedPoint, lat: currentView.lat, lon: currentView.lon },
+      imagePaneSize,
+      nextDegrees,
+    );
     const nextLatSpan = nextBbox.maxLat - nextBbox.minLat;
     const nextLonSpan = nextBbox.maxLon - nextBbox.minLon;
     const nextCenter = {
       lat: clamp(anchorLat + (anchor.y / rect.height) * nextLatSpan, -85, 85),
       lon: normalizeLongitude(anchorLon - (anchor.x / rect.width) * nextLonSpan),
     };
+    const nextTargetBbox = bboxForPoint(
+      { ...selectedPoint, lat: nextCenter.lat, lon: nextCenter.lon },
+      imagePaneSize,
+      nextDegrees,
+    );
+    const nextTransform = transformForBboxes({
+      imagePaneSize,
+      loadedBbox: loadedImageBbox,
+      targetBbox: nextTargetBbox,
+    });
 
     invalidatePendingImageRequest();
-    setRegionalPan((currentPan) =>
-      scalePanForZoomAtPoint(currentPan, previewZoomDegrees, nextDegrees, anchor),
-    );
-    setCommittedRegionalPan((currentPan) =>
-      scalePanForZoomAtPoint(currentPan, previewZoomDegrees, nextDegrees, anchor),
-    );
+    setRegionalPan(nextTransform.pan);
+    setCommittedRegionalPan(nextTransform.pan);
     setPreviewZoomDegrees(nextDegrees);
+    setImageLoading(true);
     setManagedUpdateReason("resolution");
 
     clearPendingZoomCommit();
-    recenterPoint(nextCenter.lat, nextCenter.lon);
+    pendingZoomViewRef.current = {
+      lat: nextCenter.lat,
+      lon: nextCenter.lon,
+      zoomDegrees: nextDegrees,
+    };
 
     zoomCommitTimerRef.current = window.setTimeout(() => {
       zoomCommitTimerRef.current = null;
-
-      if (nextDegrees === imageryZoomDegrees) {
-        restartCurrentImageRequest();
-        return;
-      }
-
-      setImageryZoomDegrees(nextDegrees);
+      commitPendingZoomView();
     }, 260);
   }
 
@@ -832,7 +928,8 @@ export function useRegionalImagery({
   return {
     bbox,
     acquiredScenes,
-    imagePreviewScale,
+    imagePreviewScaleX,
+    imagePreviewScaleY,
     imageUrl,
     imageLoading,
     error,
