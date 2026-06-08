@@ -534,14 +534,18 @@ export function MaxZoomImagery() {
 
       {imageUrl && boundaryLinesVisible && boundaryImageUrl && (
         <img
+          key={boundaryImageUrl}
           src={boundaryImageUrl}
           alt=""
           draggable={false}
-          className="pointer-events-none absolute inset-0 z-[5] h-full w-full select-none object-cover"
+          className="pointer-events-none absolute inset-0 z-[5] h-full w-full select-none object-cover animate-in fade-in-0 duration-500"
           style={{
             transform: `translate(${pan.x}px, ${pan.y}px)`,
             filter:
               "brightness(0) invert(1) drop-shadow(0 0 1px rgba(0, 0, 0, 0.95))",
+            // Only the fade animation should run; keep the pan transform instant
+            // (the duration class would otherwise transition it and lag drags).
+            transition: "none",
           }}
         />
       )}
