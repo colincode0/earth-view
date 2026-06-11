@@ -2,6 +2,7 @@ import { LoaderCircle, MapPinned } from "lucide-react";
 import {
   type MouseEvent,
   type PointerEvent,
+  type WheelEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -10,6 +11,7 @@ import {
 } from "react";
 import { cityLabels } from "@/lib/cities";
 import {
+  IMAGERY_ZOOM_MIN_DEGREES,
   bboxWidthKm,
   clamp,
   formatApproxDistance,
@@ -23,6 +25,11 @@ import type { BoundingBox } from "@/types/imagery";
 
 const MAX_IMAGE_SIZE = 1800;
 const DETAILED_BOUNDARY_LAYER_ID = "Reference_Features";
+// ~the modal's per-tick span ratio: (12 / 0.09)^(1/100) from its percent curve.
+const ZOOM_STEP_FACTOR = 1.05;
+const ZOOM_SHIFT_TICKS = 3;
+const ZOOM_COMMIT_DELAY_MS = 260;
+const ZOOM_CROSSFADE_HOLD_MS = 300;
 
 type DragStart = {
   pointerId: number;
@@ -35,6 +42,25 @@ type DragStart = {
   bbox: BoundingBox;
 } | null;
 
+type ZoomViewState = {
+  lat: number;
+  lon: number;
+  latSpan: number;
+  lonSpan: number;
+};
+
+// Modal-style zoom owned by the detail pass. The globe camera is frozen while
+// this is non-null: zooming is a pure 2D transform of the overlay (the globe
+// behind stays at the entry framing, center-rotated to track the view), so the
+// camera and the overlay can never fight or drift. floor* = the spans at entry;
+// zooming back out to the floor hands the wheel back to the globe camera.
+type ZoomState = {
+  floorLatSpan: number;
+  floorLonSpan: number;
+  committed: ZoomViewState;
+  preview: ZoomViewState;
+};
+
 function bboxFromViewport(lat: number, lon: number, latSpan: number, lonSpan: number): BoundingBox {
   const halfLat = latSpan / 2;
   const halfLon = lonSpan / 2;
@@ -44,6 +70,46 @@ function bboxFromViewport(lat: number, lon: number, latSpan: number, lonSpan: nu
     maxLat: clamp(lat + halfLat, -85, 85),
     minLon: clamp(lon - halfLon, -180, 180),
     maxLon: clamp(lon + halfLon, -180, 180),
+  };
+}
+
+function zoomViewBbox(view: ZoomViewState) {
+  return bboxFromViewport(view.lat, view.lon, view.latSpan, view.lonSpan);
+}
+
+// Same math as the modal's transformForBboxes: maps the loaded raster onto the
+// current target view as a center-origin translate+scale.
+function transformForBboxes(
+  paneSize: { width: number; height: number },
+  loadedBbox: BoundingBox,
+  targetBbox: BoundingBox,
+) {
+  const loadedLatSpan = loadedBbox.maxLat - loadedBbox.minLat;
+  const loadedLonSpan = loadedBbox.maxLon - loadedBbox.minLon;
+  const targetLatSpan = targetBbox.maxLat - targetBbox.minLat;
+  const targetLonSpan = targetBbox.maxLon - targetBbox.minLon;
+
+  if (
+    loadedLatSpan <= 0 ||
+    loadedLonSpan <= 0 ||
+    targetLatSpan <= 0 ||
+    targetLonSpan <= 0
+  ) {
+    return { pan: { x: 0, y: 0 }, scaleX: 1, scaleY: 1 };
+  }
+
+  const loadedLat = (loadedBbox.minLat + loadedBbox.maxLat) / 2;
+  const loadedLon = normalizeLongitude((loadedBbox.minLon + loadedBbox.maxLon) / 2);
+  const targetLat = (targetBbox.minLat + targetBbox.maxLat) / 2;
+  const targetLon = normalizeLongitude((targetBbox.minLon + targetBbox.maxLon) / 2);
+
+  return {
+    pan: {
+      x: (normalizeLongitude(loadedLon - targetLon) / targetLonSpan) * paneSize.width,
+      y: ((targetLat - loadedLat) / targetLatSpan) * paneSize.height,
+    },
+    scaleX: loadedLonSpan / targetLonSpan,
+    scaleY: loadedLatSpan / targetLatSpan,
   };
 }
 
@@ -94,6 +160,10 @@ export function MaxZoomImagery() {
   const objectUrlsRef = useRef(new Set<string>());
   const cacheScopeRef = useRef<string | null>(null);
   const visibleScopeRef = useRef<string | null>(null);
+  const zoomCommitTimerRef = useRef<number | null>(null);
+  const requestVersionRef = useRef(0);
+  const zoomPreviewRef = useRef<ZoomViewState | null>(null);
+  const zoomActiveRef = useRef(false);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [displayedBbox, setDisplayedBbox] = useState<BoundingBox | null>(null);
   const [loading, setLoading] = useState(false);
@@ -101,6 +171,11 @@ export function MaxZoomImagery() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [committedPan, setCommittedPan] = useState({ x: 0, y: 0 });
   const [dragStart, setDragStart] = useState<DragStart>(null);
+  const [zoomState, setZoomState] = useState<ZoomState | null>(null);
+  const [requestNonce, setRequestNonce] = useState(0);
+  const [fadeOutLayer, setFadeOutLayer] = useState<{ url: string; transform: string } | null>(
+    null,
+  );
   const [viewportSize, setViewportSize] = useState({
     width: typeof window === "undefined" ? 1600 : window.innerWidth,
     height: typeof window === "undefined" ? 1000 : window.innerHeight,
@@ -111,8 +186,27 @@ export function MaxZoomImagery() {
   const updatingMessage = provider.loadingMessage
     ? `Updating. ${provider.loadingMessage}`
     : "Updating";
-  const isVisible = Boolean(imageryVisible && globeView?.atMaxZoom);
+  const zoomActive = zoomState !== null;
+  // While the in-pass zoom owns the view, keep the pass mounted regardless of
+  // the raycast-reported atMaxZoom flag (it can wobble; the camera distance is
+  // frozen in zoom mode, so the flag carries no information here).
+  const isVisible = Boolean(imageryVisible && (zoomActive || globeView?.atMaxZoom));
   const aspect = viewportSize.width / Math.max(viewportSize.height, 1);
+  // Request size always preserves the viewport aspect so the raster maps onto
+  // the pane 1:1 (the zoom transform math assumes raster == full bbox == pane).
+  const imageSize = (() => {
+    let width = clamp(Math.round(viewportSize.width * 1.25), 1024, MAX_IMAGE_SIZE);
+    let height = Math.max(1, Math.round(width / aspect));
+
+    if (height > MAX_IMAGE_SIZE) {
+      width = Math.max(1, Math.round((width * MAX_IMAGE_SIZE) / height));
+      height = MAX_IMAGE_SIZE;
+    }
+
+    return { width, height };
+  })();
+  const imageWidth = imageSize.width;
+  const imageHeight = imageSize.height;
   const bbox = useMemo(() => {
     if (!globeView) {
       return null;
@@ -120,12 +214,19 @@ export function MaxZoomImagery() {
 
     return bboxFromViewport(globeView.lat, globeView.lon, globeView.latSpan, globeView.lonSpan);
   }, [globeView]);
-  const activeBbox = dragStart?.bbox ?? bbox;
-  const imageWidth = Math.min(MAX_IMAGE_SIZE, Math.max(1024, Math.round(viewportSize.width * 1.25)));
-  const imageHeight = Math.min(MAX_IMAGE_SIZE, Math.max(768, Math.round(imageWidth / aspect)));
+  const zoomPreviewBbox = zoomState ? zoomViewBbox(zoomState.preview) : null;
+  const zoomCommittedBbox = zoomState ? zoomViewBbox(zoomState.committed) : null;
+  const activeBbox = zoomCommittedBbox ?? dragStart?.bbox ?? bbox;
   const activeBboxKey = activeBbox ? bboxCacheKey(activeBbox) : "";
   const requestBbox = useMemo(() => bboxFromCacheKey(activeBboxKey), [activeBboxKey]);
   const labelBbox = displayedBbox ?? activeBbox;
+  const zoomTransform =
+    zoomActive && displayedBbox && zoomPreviewBbox
+      ? transformForBboxes(viewportSize, displayedBbox, zoomPreviewBbox)
+      : null;
+  const imageScaleX = zoomTransform?.scaleX ?? 1;
+  const imageScaleY = zoomTransform?.scaleY ?? 1;
+  const imageTransform = `translate(${pan.x}px, ${pan.y}px) scale(${imageScaleX}, ${imageScaleY})`;
   const boundaryImageUrl = labelBbox
     ? buildGibsWmsUrl(
         DETAILED_BOUNDARY_LAYER_ID,
@@ -204,13 +305,32 @@ export function MaxZoomImagery() {
     }
   }, []);
 
-  const clearImageCache = useCallback(() => {
+  // Drops the cache without revoking URLs that are still on screen (the
+  // displayed image or a crossfade layer); those get swept on unmount.
+  const clearImageCache = useCallback((keepUrls?: Set<string>) => {
     for (const cachedUrl of imageCacheRef.current.values()) {
-      revokeImageUrl(cachedUrl);
+      if (!keepUrls?.has(cachedUrl)) {
+        revokeImageUrl(cachedUrl);
+      }
     }
 
     imageCacheRef.current.clear();
   }, [revokeImageUrl]);
+
+  function clearZoomCommitTimer() {
+    if (zoomCommitTimerRef.current !== null) {
+      window.clearTimeout(zoomCommitTimerRef.current);
+      zoomCommitTimerRef.current = null;
+    }
+  }
+
+  function commitPendingZoomPreview() {
+    setZoomState((state) =>
+      state && state.committed !== state.preview
+        ? { ...state, committed: state.preview }
+        : state,
+    );
+  }
 
   useEffect(() => {
     let animationFrame = 0;
@@ -232,41 +352,114 @@ export function MaxZoomImagery() {
     };
   }, []);
 
+  // Crossfade for zoom-mode image swaps: hold the outgoing raster (frozen at
+  // the transform it was showing) behind the incoming one, like the modal's
+  // Sentinel handoff. Base-mode swaps keep today's clear-then-show behavior.
+  const previousImageUrlRef = useRef(imageUrl);
+  const liveImageTransformRef = useRef(imageTransform);
+
+  useEffect(() => {
+    const nextUrl = imageUrl;
+
+    if (nextUrl === previousImageUrlRef.current) {
+      return;
+    }
+
+    const previousUrl = previousImageUrlRef.current;
+    previousImageUrlRef.current = nextUrl;
+
+    if (!zoomActiveRef.current || !previousUrl || !nextUrl) {
+      setFadeOutLayer(null);
+      return;
+    }
+
+    const layer = { url: previousUrl, transform: liveImageTransformRef.current };
+    setFadeOutLayer(layer);
+
+    const timer = window.setTimeout(() => {
+      setFadeOutLayer((current) => (current === layer ? null : current));
+    }, ZOOM_CROSSFADE_HOLD_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [imageUrl]);
+
+  // Runs after the crossfade snapshot above so the snapshot reads the
+  // transform from the previous render (what the outgoing image was showing).
+  useEffect(() => {
+    liveImageTransformRef.current = imageTransform;
+    zoomActiveRef.current = zoomActive;
+    zoomPreviewRef.current = zoomState?.preview ?? null;
+  });
+
   useEffect(() => {
     if (!requestBbox || !isVisible) {
       return;
     }
 
     let cancelled = false;
+    const requestVersion = requestVersionRef.current;
+    const paneSize = viewportSize;
     const nextCacheScope = cacheScope;
     const cacheKey = `${nextCacheScope}|${provider.id}`;
     const nextVisibleScope = cacheKey;
 
+    function applyLoadedImage(nextImageUrl: string) {
+      setImageUrl(nextImageUrl);
+      setDisplayedBbox(requestBbox);
+
+      const preview = zoomPreviewRef.current;
+
+      if (zoomActiveRef.current && preview && requestBbox) {
+        const transform = transformForBboxes(paneSize, requestBbox, zoomViewBbox(preview));
+        setPan(transform.pan);
+        setCommittedPan(transform.pan);
+      } else {
+        setPan({ x: 0, y: 0 });
+        setCommittedPan({ x: 0, y: 0 });
+      }
+
+      setLoading(false);
+    }
+
     if (cacheScopeRef.current !== nextCacheScope) {
-      clearImageCache();
+      const keepUrls = new Set<string>();
+
+      if (imageUrl) {
+        keepUrls.add(imageUrl);
+      }
+
+      if (fadeOutLayer) {
+        keepUrls.add(fadeOutLayer.url);
+      }
+
+      clearImageCache(keepUrls);
       cacheScopeRef.current = nextCacheScope;
     }
 
     if (visibleScopeRef.current !== nextVisibleScope) {
-      setImageUrl(null);
-      setDisplayedBbox(null);
-      setPan({ x: 0, y: 0 });
-      setCommittedPan({ x: 0, y: 0 });
+      // In zoom mode the old raster stays up (re-projected by the transform)
+      // until the new one crossfades in; clearing here would flash the globe.
+      if (!zoomActiveRef.current) {
+        setImageUrl(null);
+        setDisplayedBbox(null);
+        setPan({ x: 0, y: 0 });
+        setCommittedPan({ x: 0, y: 0 });
+      }
+
       visibleScopeRef.current = nextVisibleScope;
     }
 
     setLoading(true);
     setError(null);
-    setDragStart(null);
+
+    if (!zoomActiveRef.current) {
+      setDragStart(null);
+    }
 
     const cachedImageUrl = imageCacheRef.current.get(cacheKey);
 
     if (cachedImageUrl) {
-      setImageUrl(cachedImageUrl);
-      setDisplayedBbox(requestBbox);
-      setPan({ x: 0, y: 0 });
-      setCommittedPan({ x: 0, y: 0 });
-      setLoading(false);
+      applyLoadedImage(cachedImageUrl);
       return () => {
         cancelled = true;
       };
@@ -275,7 +468,7 @@ export function MaxZoomImagery() {
     provider
       .fetchImage({ bbox: requestBbox, date, width: imageWidth, height: imageHeight })
       .then(async (result) => {
-        if (cancelled) {
+        if (cancelled || requestVersion !== requestVersionRef.current) {
           return;
         }
 
@@ -288,20 +481,16 @@ export function MaxZoomImagery() {
           throw error;
         }
 
-        if (cancelled) {
+        if (cancelled || requestVersion !== requestVersionRef.current) {
           revokeImageUrl(nextImageUrl);
           return;
         }
 
         imageCacheRef.current.set(cacheKey, nextImageUrl);
-        setImageUrl(nextImageUrl);
-        setDisplayedBbox(requestBbox);
-        setPan({ x: 0, y: 0 });
-        setCommittedPan({ x: 0, y: 0 });
-        setLoading(false);
+        applyLoadedImage(nextImageUrl);
       })
       .catch(() => {
-        if (!cancelled) {
+        if (!cancelled && requestVersion === requestVersionRef.current) {
           setError("Detailed imagery is unavailable for this view.");
           setLoading(false);
         }
@@ -310,6 +499,9 @@ export function MaxZoomImagery() {
     return () => {
       cancelled = true;
     };
+    // imageUrl/fadeOutLayer are only read to protect on-screen blob URLs from
+    // cache eviction; re-running on their changes would refetch needlessly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeBboxKey,
     cacheScope,
@@ -321,10 +513,41 @@ export function MaxZoomImagery() {
     isVisible,
     provider,
     requestBbox,
+    requestNonce,
     revokeImageUrl,
+    viewportSize,
   ]);
 
-  useEffect(() => clearImageCache, [clearImageCache]);
+  useEffect(() => {
+    const urls = objectUrlsRef.current;
+    const cache = imageCacheRef.current;
+
+    return () => {
+      for (const url of urls) {
+        URL.revokeObjectURL(url);
+      }
+
+      urls.clear();
+      cache.clear();
+    };
+  }, []);
+
+  // Leaving the pass (zoom-out past the entry level, imagery toggled off)
+  // resets the in-pass zoom so re-entry always starts at the globe's framing.
+  useEffect(() => {
+    if (isVisible) {
+      return;
+    }
+
+    clearZoomCommitTimer();
+    setZoomState(null);
+    setFadeOutLayer(null);
+    setPan({ x: 0, y: 0 });
+    setCommittedPan({ x: 0, y: 0 });
+    setDragStart(null);
+  }, [isVisible]);
+
+  useEffect(() => () => clearZoomCommitTimer(), []);
 
   useEffect(() => {
     document.body.classList.toggle("map-dragging-modal", Boolean(dragStart));
@@ -356,6 +579,11 @@ export function MaxZoomImagery() {
   }
 
   function commitPan(nextPan = pan) {
+    if (zoomState) {
+      commitZoomPan(nextPan);
+      return;
+    }
+
     if (!activeBbox || !globeView || (Math.abs(nextPan.x) < 4 && Math.abs(nextPan.y) < 4)) {
       setPan({ x: 0, y: 0 });
       return;
@@ -376,12 +604,172 @@ export function MaxZoomImagery() {
     }
   }
 
+  function commitZoomPan(nextPan: { x: number; y: number }) {
+    if (!zoomState) {
+      return;
+    }
+
+    const start = dragStart;
+    const dragDelta = start
+      ? { x: nextPan.x - start.originX, y: nextPan.y - start.originY }
+      : { x: 0, y: 0 };
+
+    if (!start || (Math.abs(dragDelta.x) < 4 && Math.abs(dragDelta.y) < 4)) {
+      // Tiny drag: restore the committed transform and make sure any zoom that
+      // was pending (or in flight) when the pointer went down still lands.
+      setPan(committedPan);
+      commitPendingZoomPreview();
+      setRequestNonce((nonce) => nonce + 1);
+      return;
+    }
+
+    const center = getCenterForPan(dragDelta, start.bbox, start.centerLat, start.centerLon);
+
+    if (!center) {
+      setPan(committedPan);
+      return;
+    }
+
+    const nextView: ZoomViewState = {
+      lat: center.lat,
+      lon: center.lon,
+      latSpan: zoomState.preview.latSpan,
+      lonSpan: zoomState.preview.lonSpan,
+    };
+    const transform = displayedBbox
+      ? transformForBboxes(viewportSize, displayedBbox, zoomViewBbox(nextView))
+      : null;
+    const settledPan = transform?.pan ?? nextPan;
+
+    setZoomState((state) =>
+      state ? { ...state, committed: nextView, preview: nextView } : state,
+    );
+    setPan(settledPan);
+    setCommittedPan(settledPan);
+    focusGlobeAt(center.lat, center.lon, { immediate: true, syncView: false });
+  }
+
+  function exitZoomToGlobe(event: WheelEvent<HTMLDivElement>) {
+    clearZoomCommitTimer();
+    requestVersionRef.current += 1;
+    setZoomState(null);
+    setFadeOutLayer(null);
+    setPan({ x: 0, y: 0 });
+    setCommittedPan({ x: 0, y: 0 });
+    // Clear the raster like today's base-mode zoom-out does: the globe behind
+    // is lined up at the entry framing, so it takes over seamlessly while the
+    // camera dollies out (and a new fetch lands if the user stops here).
+    setImageUrl(null);
+    setDisplayedBbox(null);
+    setLoading(false);
+    requestGlobeZoom(event.deltaY, event.shiftKey);
+  }
+
+  function applyZoomTick(event: WheelEvent<HTMLDivElement>) {
+    const rect = paneRef.current?.getBoundingClientRect();
+
+    if (!rect || !globeView) {
+      return;
+    }
+
+    const floorLatSpan = zoomState?.floorLatSpan ?? globeView.latSpan;
+    const floorLonSpan = zoomState?.floorLonSpan ?? globeView.lonSpan;
+    const current = zoomState?.preview ?? {
+      lat: globeView.lat,
+      lon: globeView.lon,
+      latSpan: floorLatSpan,
+      lonSpan: floorLonSpan,
+    };
+    const zoomingIn = event.deltaY < 0;
+
+    if (!zoomingIn && current.lonSpan >= floorLonSpan * 0.999) {
+      exitZoomToGlobe(event);
+      return;
+    }
+
+    const factor = Math.pow(ZOOM_STEP_FACTOR, event.shiftKey ? ZOOM_SHIFT_TICKS : 1);
+    const nextLonSpan = clamp(
+      zoomingIn ? current.lonSpan / factor : current.lonSpan * factor,
+      IMAGERY_ZOOM_MIN_DEGREES,
+      floorLonSpan,
+    );
+
+    if (nextLonSpan === current.lonSpan) {
+      return;
+    }
+
+    const nextLatSpan = nextLonSpan * (floorLatSpan / floorLonSpan);
+
+    // Cursor-anchored zoom, same math as the modal: the ground point under the
+    // cursor stays under the cursor.
+    const anchor = {
+      x: event.clientX - rect.left - rect.width / 2,
+      y: event.clientY - rect.top - rect.height / 2,
+    };
+    const anchorLat = clamp(current.lat - (anchor.y / rect.height) * current.latSpan, -85, 85);
+    const anchorLon = normalizeLongitude(
+      current.lon + (anchor.x / rect.width) * current.lonSpan,
+    );
+    const nextPreview: ZoomViewState = {
+      lat: clamp(anchorLat + (anchor.y / rect.height) * nextLatSpan, -85, 85),
+      lon: normalizeLongitude(anchorLon - (anchor.x / rect.width) * nextLonSpan),
+      latSpan: nextLatSpan,
+      lonSpan: nextLonSpan,
+    };
+
+    if (displayedBbox) {
+      const transform = transformForBboxes(viewportSize, displayedBbox, zoomViewBbox(nextPreview));
+      setPan(transform.pan);
+      setCommittedPan(transform.pan);
+    }
+
+    setZoomState((state) => ({
+      floorLatSpan,
+      floorLonSpan,
+      committed: state?.committed ?? current,
+      preview: nextPreview,
+    }));
+    setLoading(true);
+    focusGlobeAt(nextPreview.lat, nextPreview.lon, { immediate: true, syncView: false });
+
+    clearZoomCommitTimer();
+    zoomCommitTimerRef.current = window.setTimeout(() => {
+      zoomCommitTimerRef.current = null;
+      commitPendingZoomPreview();
+    }, ZOOM_COMMIT_DELAY_MS);
+  }
+
   function pointFromImageClient(clientX: number, clientY: number) {
     const rect = paneRef.current?.getBoundingClientRect();
 
+    if (!rect) {
+      return null;
+    }
+
+    if (zoomState && zoomPreviewBbox) {
+      const dragDelta = dragStart
+        ? { x: pan.x - dragStart.originX, y: pan.y - dragStart.originY }
+        : { x: 0, y: 0 };
+      const baseX = clientX - rect.left - rect.width / 2 - dragDelta.x;
+      const baseY = clientY - rect.top - rect.height / 2 - dragDelta.y;
+      const lonSpan = zoomPreviewBbox.maxLon - zoomPreviewBbox.minLon;
+      const latSpan = zoomPreviewBbox.maxLat - zoomPreviewBbox.minLat;
+
+      return {
+        lat: clamp(zoomState.preview.lat - (baseY / rect.height) * latSpan, -85, 85),
+        lon: normalizeLongitude(zoomState.preview.lon + (baseX / rect.width) * lonSpan),
+        imageryView: {
+          latSpan,
+          lonSpan,
+          pixelWidth: rect.width,
+          pixelHeight: rect.height,
+        },
+      };
+    }
+
     const sourceBbox = displayedBbox ?? activeBbox;
 
-    if (!rect || !sourceBbox) {
+    if (!sourceBbox) {
       return null;
     }
 
@@ -410,7 +798,11 @@ export function MaxZoomImagery() {
     return null;
   }
 
-  const wideKm = bboxWidthKm(activeBbox);
+  const infoBbox = zoomPreviewBbox ?? activeBbox;
+  const infoCenter = zoomState
+    ? { lat: zoomState.preview.lat, lon: zoomState.preview.lon }
+    : { lat: globeView.lat, lon: globeView.lon };
+  const wideKm = bboxWidthKm(infoBbox);
 
   return (
     <div
@@ -418,18 +810,54 @@ export function MaxZoomImagery() {
       className="absolute inset-0 z-[5] overflow-hidden bg-transparent"
       onWheel={(event) => {
         event.preventDefault();
+
+        if (event.deltaY === 0 || dragStart) {
+          return;
+        }
+
+        if (zoomState) {
+          applyZoomTick(event);
+          return;
+        }
+
+        // First in-pass zoom-in enters the modal-style zoom (needs a loaded
+        // raster to transform); everything else stays on the globe camera.
+        if (event.deltaY < 0 && imageUrl && displayedBbox) {
+          applyZoomTick(event);
+          return;
+        }
+
         requestGlobeZoom(event.deltaY, event.shiftKey);
       }}
     >
+      {fadeOutLayer && (
+        <img
+          key={`fade-${fadeOutLayer.url}`}
+          src={fadeOutLayer.url}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          className="pointer-events-none absolute inset-0 h-full w-full select-none object-cover"
+          style={{
+            transform: fadeOutLayer.transform,
+            transformOrigin: "center",
+            opacity: 0.94,
+          }}
+        />
+      )}
+
       {imageUrl && (
         <img
           key={imageUrl}
           src={imageUrl}
           alt=""
           draggable={false}
-          className="h-full w-full cursor-grab select-none object-cover active:cursor-grabbing"
+          className={`h-full w-full cursor-grab select-none object-cover active:cursor-grabbing${
+            fadeOutLayer ? " animate-in fade-in-0 duration-200" : ""
+          }`}
           style={{
-            transform: `translate(${pan.x}px, ${pan.y}px)`,
+            transform: imageTransform,
+            transformOrigin: "center",
             opacity: dragStart ? 0.76 : 0.94,
             transition: dragStart || loading ? "none" : "transform 160ms ease-out",
           }}
@@ -460,6 +888,26 @@ export function MaxZoomImagery() {
               return;
             }
 
+            if (zoomState && zoomPreviewBbox) {
+              // A drag supersedes any pending zoom commit; the drag commit
+              // carries the preview spans, and in-flight loads are discarded
+              // so they can't reposition the image mid-drag.
+              clearZoomCommitTimer();
+              requestVersionRef.current += 1;
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setDragStart({
+                pointerId: event.pointerId,
+                x: event.clientX,
+                y: event.clientY,
+                originX: committedPan.x,
+                originY: committedPan.y,
+                centerLat: zoomState.preview.lat,
+                centerLon: zoomState.preview.lon,
+                bbox: zoomPreviewBbox,
+              });
+              return;
+            }
+
             event.currentTarget.setPointerCapture(event.pointerId);
             setDragStart({
               pointerId: event.pointerId,
@@ -481,8 +929,12 @@ export function MaxZoomImagery() {
               x: dragStart.originX + event.clientX - dragStart.x,
               y: dragStart.originY + event.clientY - dragStart.y,
             };
+            const dragDelta = {
+              x: nextPan.x - dragStart.originX,
+              y: nextPan.y - dragStart.originY,
+            };
             const center = getCenterForPan(
-              nextPan,
+              zoomState ? dragDelta : nextPan,
               dragStart.bbox,
               dragStart.centerLat,
               dragStart.centerLon,
@@ -507,6 +959,14 @@ export function MaxZoomImagery() {
           }}
           onPointerCancel={() => {
             setDragStart(null);
+
+            if (zoomState) {
+              setPan(committedPan);
+              commitPendingZoomPreview();
+              setRequestNonce((nonce) => nonce + 1);
+              return;
+            }
+
             setPan(committedPan);
           }}
           onLoad={() => setLoading(false)}
@@ -527,7 +987,8 @@ export function MaxZoomImagery() {
             className="pointer-events-none absolute inset-0 z-[4] h-full w-full select-none object-cover"
             style={{
               opacity: 0.9,
-              transform: `translate(${pan.x}px, ${pan.y}px)`,
+              transform: imageTransform,
+              transformOrigin: "center",
             }}
           />
         ))}
@@ -540,7 +1001,8 @@ export function MaxZoomImagery() {
           draggable={false}
           className="pointer-events-none absolute inset-0 z-[5] h-full w-full select-none object-cover animate-in fade-in-0 duration-500"
           style={{
-            transform: `translate(${pan.x}px, ${pan.y}px)`,
+            transform: imageTransform,
+            transformOrigin: "center",
             filter:
               "brightness(0) invert(1) drop-shadow(0 0 1px rgba(0, 0, 0, 0.95))",
             // Only the fade animation should run; keep the pan transform instant
@@ -563,8 +1025,8 @@ export function MaxZoomImagery() {
                 key={city.name}
                 className="city-label absolute"
                 style={{
-                  left: `calc(${left}% + ${pan.x}px)`,
-                  top: `calc(${top}% + ${pan.y}px)`,
+                  left: `calc(50% + ${(left - 50) * imageScaleX}% + ${pan.x}px)`,
+                  top: `calc(50% + ${(top - 50) * imageScaleY}% + ${pan.y}px)`,
                   transform: "translate(-50%, -50%)",
                 }}
               >
@@ -578,7 +1040,7 @@ export function MaxZoomImagery() {
       <div className="pointer-events-none absolute left-4 top-28 z-10 flex max-w-[calc(100vw-2rem)] flex-wrap items-center gap-2 rounded-md border border-white/10 bg-background/55 px-3 py-2 text-sm text-white/85 shadow-2xl backdrop-blur md:left-6">
         <MapPinned className="h-4 w-4 text-primary" />
         <span className="font-medium">{provider.name}</span>
-        <span className="text-muted-foreground">{formatCoordinates(globeView.lat, globeView.lon)}</span>
+        <span className="text-muted-foreground">{formatCoordinates(infoCenter.lat, infoCenter.lon)}</span>
         <span className="text-muted-foreground">{formatApproxDistance(wideKm / 111)} wide</span>
       </div>
 

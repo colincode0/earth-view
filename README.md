@@ -37,7 +37,7 @@ In this view, users can:
 - Enter a max-zoom 2D detailed imagery overlay when the camera gets close enough.
 - Select a point with shift-click or right-click to open the modal view.
 
-At max zoom, the app overlays a higher-detail regional image for the current viewport. That overlay can be dragged to pan the camera, and selecting a point from it preserves the visible regional span so the modal opens at a matching scale. The detailed pass also renders the active GIBS overlay stack as aligned regional WMS images, plus a NASA GIBS reference-features boundary overlay styled for contrast; both obey the globe-view visibility toggles.
+At max zoom, the app overlays a higher-detail regional image for the current viewport. That overlay can be dragged to pan the camera, and scrolling zooms within the pass modal-style: cursor-anchored, with a short debounce before a sharper image is fetched and crossfaded in. While zoomed inside the pass the globe camera stays parked at the entry framing (only rotated to track the view center), so zooming back out hands the wheel back to the globe camera seamlessly. Selecting a point preserves the visible regional span so the modal opens at a matching scale. The detailed pass also renders the active GIBS overlay stack as aligned regional WMS images, plus a NASA GIBS reference-features boundary overlay styled for contrast; both obey the globe-view visibility toggles.
 
 Sentinel layers are regional-only providers. They can be selected once the app is operating at the detailed regional level, but they are not wrapped as true globe textures; the globe falls back to a global VIIRS true-color base while Sentinel imagery is rendered through the regional API flow.
 
@@ -204,7 +204,7 @@ npm run lint     # Run ESLint
 - Hover activity markers for event details. Earthquake marker color tracks magnitude, volcanoes use a distinct X marker, and storm tracks show the latest storm head.
 - At max zoom, the app replaces the globe view with a higher-detail regional image for the current viewport, while keeping visible overlays and boundary lines aligned over that image.
 - Shift-click or right-click the globe or max-zoom image to select a point and open the imagery modal.
-- Use max-zoom drag gestures to pan the detailed overlay before selecting a point.
+- Use max-zoom drag gestures to pan the detailed overlay, and scroll to zoom within it (cursor-anchored, like the modal) before selecting a point.
 
 ### Modal View
 
@@ -272,7 +272,7 @@ Sentinel layers are listed first in the modal layer switcher, followed by non-ov
 
 Globe camera controls adapt interaction speed by camera distance. Scroll zoom and drag/pan slow down near the globe surface so close exploration is less sensitive, while wider globe navigation remains responsive. A capture-phase Shift+wheel handler applies a stronger zoom step for intentional fast zooming without changing normal wheel behavior.
 
-`src/components/Globe/MaxZoomImagery.tsx` listens for max-zoom globe state. When the camera is close enough, it requests a regional image for the visible bounding box and presents it as a 2D overlay. This allows clearer local inspection than stretching the global sphere texture. It also draws selected GIBS overlays as transparent regional WMS images and draws NASA GIBS `Reference_Features` boundaries with a white line and dark halo when boundary lines are enabled.
+`src/components/Globe/MaxZoomImagery.tsx` listens for max-zoom globe state. When the camera is close enough, it requests a regional image for the visible bounding box and presents it as a 2D overlay. This allows clearer local inspection than stretching the global sphere texture. Scrolling inside the pass enters a modal-style zoom owned by the component: the view (center + spans) lives in local state, wheel ticks apply a cursor-anchored translate+scale preview, and a debounced commit fetches the sharper image and crossfades it in. The globe camera is never dollied during in-pass zoom — it stays at the entry framing and is only rotated (`focusGlobeAt`) to keep the globe behind centered under the view, so the overlay and camera cannot fight. Zooming back out to the entry span exits the in-pass zoom and routes the wheel to the globe camera again. It also draws selected GIBS overlays as transparent regional WMS images and draws NASA GIBS `Reference_Features` boundaries with a white line and dark halo when boundary lines are enabled.
 
 `src/components/Globe/CameraHotkeys.tsx` owns the floating imagery panel, number-key layer switching, base imagery visibility, boundary visibility, GIBS overlay stack visibility, GIBS overlay stack controls, and activity overlay toggles. It separates base imagery from analytic overlays by using `overlayOnly`, displays overlay texture load status, and renders dark readable hover summaries for overlay candidates.
 
