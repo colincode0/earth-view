@@ -31,6 +31,7 @@ const SHIFT_WHEEL_ZOOM_MULTIPLIER = 3.5;
 const VIEW_REPORT_INTERVAL = 8;
 const INITIAL_GLOBE_TEXTURE_WIDTH = 4096;
 const DETAILED_GLOBE_TEXTURE_WIDTH = 8192;
+const DETAIL_DISTANCE_MATCH_ITERATIONS = 14;
 
 function zoomProgressForDistance(distance: number) {
   const progress = (distance - MIN_GLOBE_DISTANCE) / (MAX_GLOBE_DISTANCE - MIN_GLOBE_DISTANCE);
@@ -44,9 +45,11 @@ function AdaptiveControls() {
   const gl = useThree((state) => state.gl);
   const focusRequest = useAppStore((state) => state.globeFocusRequest);
   const zoomRequest = useAppStore((state) => state.globeZoomRequest);
+  const detailViewRequest = useAppStore((state) => state.globeDetailViewRequest);
   const setGlobeView = useAppStore((state) => state.setGlobeView);
   const lastFocusNonce = useRef(0);
   const lastZoomNonce = useRef(0);
+  const lastDetailViewNonce = useRef(0);
   const frameCount = useRef(0);
   const lastReportedView = useRef<{
     lat: number;
@@ -60,6 +63,97 @@ function AdaptiveControls() {
   const sphereRef = useRef(new Sphere(undefined, 1));
   const centerPointRef = useRef(new Vector2(0, 0));
   const intersectionRef = useRef(new Vector3());
+
+  const readSurfacePoint = useCallback(
+    (ndcX: number, ndcY: number) => {
+      raycasterRef.current.setFromCamera(centerPointRef.current.set(ndcX, ndcY), camera);
+
+      const point = raycasterRef.current.ray.intersectSphere(
+        sphereRef.current,
+        intersectionRef.current,
+      );
+
+      return point ? pointToLatLon(point) : null;
+    },
+    [camera],
+  );
+
+  const readCurrentView = useCallback(() => {
+    const centerPoint = readSurfacePoint(0, 0);
+
+    if (!centerPoint) {
+      return null;
+    }
+
+    const leftPoint = readSurfacePoint(-1, 0);
+    const rightPoint = readSurfacePoint(1, 0);
+    const topPoint = readSurfacePoint(0, 1);
+    const bottomPoint = readSurfacePoint(0, -1);
+
+    return {
+      lat: centerPoint.lat,
+      lon: centerPoint.lon,
+      latSpan:
+        topPoint && bottomPoint
+          ? Math.max(0.01, Math.abs(topPoint.lat - bottomPoint.lat))
+          : 8,
+      lonSpan:
+        leftPoint && rightPoint
+          ? Math.max(0.01, Math.abs(normalizeLongitude(rightPoint.lon - leftPoint.lon)))
+          : 8,
+    };
+  }, [readSurfacePoint]);
+
+  const moveCameraTo = useCallback(
+    (lat: number, lon: number, distance: number) => {
+      const direction = latLonToVector(lat, lon).normalize();
+
+      camera.position.copy(direction.multiplyScalar(distance));
+      camera.lookAt(0, 0, 0);
+      camera.updateMatrixWorld();
+    },
+    [camera],
+  );
+
+  const matchDistanceForDetailView = useCallback(
+    (lat: number, lon: number, targetLatSpan: number, targetLonSpan: number) => {
+      const targetLat = Math.max(0.01, targetLatSpan);
+      const targetLon = Math.max(0.01, targetLonSpan);
+      let low = MIN_GLOBE_DISTANCE;
+      let high = MAX_ZOOM_DISTANCE;
+      let bestDistance = low;
+      let bestScore = Number.POSITIVE_INFINITY;
+
+      for (let index = 0; index < DETAIL_DISTANCE_MATCH_ITERATIONS; index += 1) {
+        const distance = (low + high) / 2;
+
+        moveCameraTo(lat, lon, distance);
+        const view = readCurrentView();
+
+        if (!view) {
+          return MIN_GLOBE_DISTANCE;
+        }
+
+        const latRatio = view.latSpan / targetLat;
+        const lonRatio = view.lonSpan / targetLon;
+        const score = Math.abs(Math.log(latRatio)) + Math.abs(Math.log(lonRatio));
+
+        if (score < bestScore) {
+          bestScore = score;
+          bestDistance = distance;
+        }
+
+        if (Math.max(latRatio, lonRatio) > 1) {
+          high = distance;
+        } else {
+          low = distance;
+        }
+      }
+
+      return bestDistance;
+    },
+    [moveCameraTo, readCurrentView],
+  );
 
   useEffect(() => {
     const element = gl.domElement;
@@ -94,6 +188,26 @@ function AdaptiveControls() {
 
     if (!controls) {
       return;
+    }
+
+    if (detailViewRequest && detailViewRequest.nonce !== lastDetailViewNonce.current) {
+      lastDetailViewNonce.current = detailViewRequest.nonce;
+
+      if (detailViewRequest.active) {
+        const distance = matchDistanceForDetailView(
+          detailViewRequest.lat,
+          detailViewRequest.lon,
+          detailViewRequest.latSpan,
+          detailViewRequest.lonSpan,
+        );
+        const originalDamping = controls.enableDamping;
+
+        controls.enableDamping = false;
+        controls.target.set(0, 0, 0);
+        moveCameraTo(detailViewRequest.lat, detailViewRequest.lon, distance);
+        controls.update();
+        controls.enableDamping = originalDamping;
+      }
     }
 
     if (focusRequest && focusRequest.nonce !== lastFocusNonce.current) {
@@ -139,36 +253,12 @@ function AdaptiveControls() {
       return;
     }
 
-    function readSurfacePoint(ndcX: number, ndcY: number) {
-      raycasterRef.current.setFromCamera(centerPointRef.current.set(ndcX, ndcY), camera);
+    const view = readCurrentView();
 
-      const point = raycasterRef.current.ray.intersectSphere(
-        sphereRef.current,
-        intersectionRef.current,
-      );
-
-      return point ? pointToLatLon(point) : null;
-    }
-
-    const centerPoint = readSurfacePoint(0, 0);
-
-    if (!centerPoint) {
+    if (!view) {
       return;
     }
 
-    const leftPoint = readSurfacePoint(-1, 0);
-    const rightPoint = readSurfacePoint(1, 0);
-    const topPoint = readSurfacePoint(0, 1);
-    const bottomPoint = readSurfacePoint(0, -1);
-    const latSpan =
-      topPoint && bottomPoint
-        ? Math.max(0.01, Math.abs(topPoint.lat - bottomPoint.lat))
-        : 8;
-    const lonSpan =
-      leftPoint && rightPoint
-        ? Math.max(0.01, Math.abs(normalizeLongitude(rightPoint.lon - leftPoint.lon)))
-        : 8;
-    const { lat, lon } = centerPoint;
     const atMaxZoom = distance <= MAX_ZOOM_DISTANCE;
     const previous = lastReportedView.current;
 
@@ -176,15 +266,15 @@ function AdaptiveControls() {
       previous &&
       previous.atMaxZoom === atMaxZoom &&
       Math.abs(previous.distance - distance) < 0.005 &&
-      Math.abs(previous.lat - lat) < 0.01 &&
-      Math.abs(previous.lon - lon) < 0.01 &&
-      Math.abs(previous.latSpan - latSpan) < 0.05 &&
-      Math.abs(previous.lonSpan - lonSpan) < 0.05
+      Math.abs(previous.lat - view.lat) < 0.01 &&
+      Math.abs(previous.lon - view.lon) < 0.01 &&
+      Math.abs(previous.latSpan - view.latSpan) < 0.05 &&
+      Math.abs(previous.lonSpan - view.lonSpan) < 0.05
     ) {
       return;
     }
 
-    const nextView = { lat, lon, latSpan, lonSpan, distance, atMaxZoom };
+    const nextView = { ...view, distance, atMaxZoom };
     lastReportedView.current = nextView;
     setGlobeView(nextView);
   });

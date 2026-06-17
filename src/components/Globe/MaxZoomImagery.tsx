@@ -11,7 +11,6 @@ import {
 } from "react";
 import { cityLabels } from "@/lib/cities";
 import {
-  IMAGERY_ZOOM_MIN_DEGREES,
   bboxWidthKm,
   clamp,
   formatApproxDistance,
@@ -25,6 +24,7 @@ import type { BoundingBox } from "@/types/imagery";
 
 const MAX_IMAGE_SIZE = 1800;
 const DETAILED_BOUNDARY_LAYER_ID = "Reference_Features";
+const DETAILED_VIEW_MIN_LON_SPAN = 5.59263;
 // ~the modal's per-tick span ratio: (12 / 0.09)^(1/100) from its percent curve.
 const ZOOM_STEP_FACTOR = 1.05;
 const ZOOM_SHIFT_TICKS = 3;
@@ -49,11 +49,10 @@ type ZoomViewState = {
   lonSpan: number;
 };
 
-// Modal-style zoom owned by the detail pass. The globe camera is frozen while
-// this is non-null: zooming is a pure 2D transform of the overlay (the globe
-// behind stays at the entry framing, center-rotated to track the view), so the
-// camera and the overlay can never fight or drift. floor* = the spans at entry;
-// zooming back out to the floor hands the wheel back to the globe camera.
+// Modal-style zoom owned by the detail pass. While this is non-null, the detail
+// preview is the source of truth and the globe only follows visually behind it.
+// floor* = the spans at entry; zooming back out to the floor hands the wheel
+// back to the globe camera.
 type ZoomState = {
   floorLatSpan: number;
   floorLonSpan: number;
@@ -154,6 +153,7 @@ export function MaxZoomImagery() {
   const modalOpen = useAppStore((state) => state.modalOpen);
   const focusGlobeAt = useAppStore((state) => state.focusGlobeAt);
   const requestGlobeZoom = useAppStore((state) => state.requestGlobeZoom);
+  const syncGlobeDetailView = useAppStore((state) => state.syncGlobeDetailView);
   const selectPoint = useAppStore((state) => state.selectPoint);
   const paneRef = useRef<HTMLDivElement>(null);
   const imageCacheRef = useRef(new Map<string, string>());
@@ -188,8 +188,8 @@ export function MaxZoomImagery() {
     : "Updating";
   const zoomActive = zoomState !== null;
   // While the in-pass zoom owns the view, keep the pass mounted regardless of
-  // the raycast-reported atMaxZoom flag (it can wobble; the camera distance is
-  // frozen in zoom mode, so the flag carries no information here).
+  // the raycast-reported atMaxZoom flag. The synced background camera follows
+  // the preview, but the reported globe view is not allowed to drive the pass.
   const isVisible = Boolean(imageryVisible && (zoomActive || globeView?.atMaxZoom));
   const aspect = viewportSize.width / Math.max(viewportSize.height, 1);
   // Request size always preserves the viewport aspect so the raster maps onto
@@ -332,6 +332,10 @@ export function MaxZoomImagery() {
     );
   }
 
+  const syncDetailBackdrop = useCallback((view: ZoomViewState | null) => {
+    syncGlobeDetailView(view);
+  }, [syncGlobeDetailView]);
+
   useEffect(() => {
     let animationFrame = 0;
 
@@ -390,6 +394,15 @@ export function MaxZoomImagery() {
     zoomActiveRef.current = zoomActive;
     zoomPreviewRef.current = zoomState?.preview ?? null;
   });
+
+  useEffect(() => {
+    if (!zoomState) {
+      syncDetailBackdrop(null);
+      return;
+    }
+
+    syncDetailBackdrop(zoomState.preview);
+  }, [syncDetailBackdrop, zoomState]);
 
   useEffect(() => {
     if (!requestBbox || !isVisible) {
@@ -541,11 +554,12 @@ export function MaxZoomImagery() {
 
     clearZoomCommitTimer();
     setZoomState(null);
+    syncDetailBackdrop(null);
     setFadeOutLayer(null);
     setPan({ x: 0, y: 0 });
     setCommittedPan({ x: 0, y: 0 });
     setDragStart(null);
-  }, [isVisible]);
+  }, [isVisible, syncDetailBackdrop]);
 
   useEffect(() => () => clearZoomCommitTimer(), []);
 
@@ -644,15 +658,16 @@ export function MaxZoomImagery() {
     setZoomState((state) =>
       state ? { ...state, committed: nextView, preview: nextView } : state,
     );
+    syncDetailBackdrop(nextView);
     setPan(settledPan);
     setCommittedPan(settledPan);
-    focusGlobeAt(center.lat, center.lon, { immediate: true, syncView: false });
   }
 
   function exitZoomToGlobe(event: WheelEvent<HTMLDivElement>) {
     clearZoomCommitTimer();
     requestVersionRef.current += 1;
     setZoomState(null);
+    syncDetailBackdrop(null);
     setFadeOutLayer(null);
     setPan({ x: 0, y: 0 });
     setCommittedPan({ x: 0, y: 0 });
@@ -690,7 +705,7 @@ export function MaxZoomImagery() {
     const factor = Math.pow(ZOOM_STEP_FACTOR, event.shiftKey ? ZOOM_SHIFT_TICKS : 1);
     const nextLonSpan = clamp(
       zoomingIn ? current.lonSpan / factor : current.lonSpan * factor,
-      IMAGERY_ZOOM_MIN_DEGREES,
+      DETAILED_VIEW_MIN_LON_SPAN,
       floorLonSpan,
     );
 
@@ -729,8 +744,8 @@ export function MaxZoomImagery() {
       committed: state?.committed ?? current,
       preview: nextPreview,
     }));
+    syncDetailBackdrop(nextPreview);
     setLoading(true);
-    focusGlobeAt(nextPreview.lat, nextPreview.lon, { immediate: true, syncView: false });
 
     clearZoomCommitTimer();
     zoomCommitTimerRef.current = window.setTimeout(() => {
@@ -841,7 +856,7 @@ export function MaxZoomImagery() {
           style={{
             transform: fadeOutLayer.transform,
             transformOrigin: "center",
-            opacity: 0.94,
+            opacity: 1,
           }}
         />
       )}
@@ -858,7 +873,7 @@ export function MaxZoomImagery() {
           style={{
             transform: imageTransform,
             transformOrigin: "center",
-            opacity: dragStart ? 0.76 : 0.94,
+            opacity: zoomActive ? 1 : dragStart ? 0.76 : 0.94,
             transition: dragStart || loading ? "none" : "transform 160ms ease-out",
           }}
           onContextMenu={(event) => {
@@ -943,7 +958,16 @@ export function MaxZoomImagery() {
             setPan(nextPan);
 
             if (center) {
-              focusGlobeAt(center.lat, center.lon, { immediate: true, syncView: false });
+              if (zoomState) {
+                syncDetailBackdrop({
+                  lat: center.lat,
+                  lon: center.lon,
+                  latSpan: zoomState.preview.latSpan,
+                  lonSpan: zoomState.preview.lonSpan,
+                });
+              } else {
+                focusGlobeAt(center.lat, center.lon, { immediate: true, syncView: false });
+              }
             }
           }}
           onPointerUp={(event) => {
@@ -1042,6 +1066,13 @@ export function MaxZoomImagery() {
         <span className="font-medium">{provider.name}</span>
         <span className="text-muted-foreground">{formatCoordinates(infoCenter.lat, infoCenter.lon)}</span>
         <span className="text-muted-foreground">{formatApproxDistance(wideKm / 111)} wide</span>
+      </div>
+
+      <div className="pointer-events-none absolute left-1/2 top-32 z-20 flex -translate-x-1/2 items-center gap-2 rounded-md border border-primary/35 bg-background/70 px-3 py-2 text-sm text-white/90 shadow-2xl backdrop-blur">
+        <kbd className="rounded-sm border border-white/15 bg-white/10 px-1.5 py-0.5 font-mono text-xs text-primary">
+          Shift
+        </kbd>
+        <span>click for higher resolution</span>
       </div>
 
       {!imageUrl && loading && !error && (
