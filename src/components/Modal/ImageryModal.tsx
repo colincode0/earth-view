@@ -474,7 +474,7 @@ export function ImageryModal() {
               </div>
             )}
             {regionalImagery.imageUrl && regionalImagery.imageLoading && !regionalImagery.error && (
-              <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-md border border-white/10 bg-black/65 px-2.5 py-1.5 text-xs text-white/85 shadow-xl backdrop-blur">
+              <div className="pointer-events-none absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-2 rounded-md border border-white/10 bg-black/65 px-2.5 py-1.5 text-xs text-white/85 shadow-xl backdrop-blur">
                 <LoaderCircle className="h-3.5 w-3.5 animate-spin text-primary" />
                 {isRegionalSentinel
                   ? regionalImagery.updateReason === "positioning"
