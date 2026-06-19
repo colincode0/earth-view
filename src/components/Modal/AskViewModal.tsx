@@ -22,6 +22,17 @@ export type AskProvider = "openai" | "anthropic";
 export type AskChatMessage = {
   role: "user" | "assistant";
   content: string;
+  sources?: AskViewSource[];
+};
+
+export type AskViewSource = {
+  title?: string;
+  url: string;
+};
+
+export type AskViewSentinelScene = {
+  dateTime: string;
+  cloudCover?: number | null;
 };
 
 export type AskViewContext = {
@@ -35,7 +46,11 @@ export type AskViewContext = {
   satellite: string;
   category: string;
   resolutionMeters: number;
+  providerSummary?: string;
+  providerBestFor?: string;
+  providerCaveat?: string;
   sentinelVariantId?: string;
+  sentinelScenes?: AskViewSentinelScene[];
   bbox?: BoundingBox | null;
   imageryZoomDegrees: number;
   imageWidth?: number | null;
@@ -52,7 +67,12 @@ type AskViewModalProps = {
 
 type AskStreamEvent =
   | { type: "delta"; delta: string }
-  | { type: "done"; message: string; viewBriefing?: string }
+  | {
+      type: "done";
+      message: string;
+      viewBriefing?: string;
+      sources?: AskViewSource[];
+    }
   | { type: "error"; error: string };
 
 const MAX_DIRECT_IMAGE_BYTES = 18 * 1024 * 1024;
@@ -64,6 +84,18 @@ function providerLabel(provider: AskProvider) {
 
 function formatNumber(value: number, digits = 4) {
   return Number(value.toFixed(digits)).toString();
+}
+
+function sourceLabel(source: AskViewSource, index: number) {
+  if (source.title?.trim()) {
+    return source.title.trim();
+  }
+
+  try {
+    return new URL(source.url).hostname.replace(/^www\./, "");
+  } catch {
+    return `Source ${index + 1}`;
+  }
 }
 
 function bboxLabel(bbox?: BoundingBox | null) {
@@ -81,7 +113,10 @@ function loadImage(url: string) {
     const image = new Image();
     image.crossOrigin = "anonymous";
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Could not load the current view image for AI analysis."));
+    image.onerror = () =>
+      reject(
+        new Error("Could not load the current view image for AI analysis."),
+      );
     image.src = url;
   });
 }
@@ -90,7 +125,10 @@ function blobToDataUrl(blob: Blob) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Could not prepare the current view image for AI analysis."));
+    reader.onerror = () =>
+      reject(
+        new Error("Could not prepare the current view image for AI analysis."),
+      );
     reader.readAsDataURL(blob);
   });
 }
@@ -122,7 +160,9 @@ async function imageToDataUrl(url: string) {
     const response = await fetch(url);
 
     if (!response.ok) {
-      throw new Error("Could not fetch the current view image for AI analysis.");
+      throw new Error(
+        "Could not fetch the current view image for AI analysis.",
+      );
     }
 
     const blob = await response.blob();
@@ -137,14 +177,19 @@ async function imageToDataUrl(url: string) {
   const image = await loadImage(url);
   const sourceWidth = image.naturalWidth || image.width;
   const sourceHeight = image.naturalHeight || image.height;
-  const scale = Math.min(1, OVERSIZED_IMAGE_MAX_EDGE / Math.max(sourceWidth, sourceHeight));
+  const scale = Math.min(
+    1,
+    OVERSIZED_IMAGE_MAX_EDGE / Math.max(sourceWidth, sourceHeight),
+  );
   const width = Math.max(1, Math.round(sourceWidth * scale));
   const height = Math.max(1, Math.round(sourceHeight * scale));
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
 
   if (!context) {
-    throw new Error("Could not prepare the current view image for AI analysis.");
+    throw new Error(
+      "Could not prepare the current view image for AI analysis.",
+    );
   }
 
   canvas.width = width;
@@ -152,7 +197,9 @@ async function imageToDataUrl(url: string) {
   context.drawImage(image, 0, 0, width, height);
 
   try {
-    return scale < 1 ? canvas.toDataURL("image/jpeg", 0.9) : canvas.toDataURL("image/png");
+    return scale < 1
+      ? canvas.toDataURL("image/jpeg", 0.9)
+      : canvas.toDataURL("image/png");
   } catch {
     throw new Error("The current image could not be captured for AI analysis.");
   }
@@ -173,7 +220,13 @@ async function requestAskViewStream(
     headers: {
       "content-type": "application/json",
     },
-    body: JSON.stringify(params),
+    body: JSON.stringify({
+      ...params,
+      messages: params.messages.map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+    }),
   });
 
   if (!response.ok) {
@@ -250,10 +303,14 @@ export function AskViewModal({
   const [viewBriefing, setViewBriefing] = useState<string | null>(null);
   const [sessionSignature, setSessionSignature] = useState<string | null>(null);
   const [sessionProvider, setSessionProvider] = useState<AskProvider>("openai");
-  const [sessionContext, setSessionContext] = useState<AskViewContext | null>(null);
+  const [sessionContext, setSessionContext] = useState<AskViewContext | null>(
+    null,
+  );
   const [sessionImageUrl, setSessionImageUrl] = useState<string | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
-  const viewChanged = Boolean(open && sessionSignature && sessionSignature !== viewSignature);
+  const viewChanged = Boolean(
+    open && sessionSignature && sessionSignature !== viewSignature,
+  );
   const displayedContext = sessionContext ?? viewContext;
   const displayedImageUrl = sessionImageUrl ?? imageUrl;
   const sessionStarted = messages.length > 0 || Boolean(sessionSignature);
@@ -301,7 +358,8 @@ export function AskViewModal({
     }
 
     const hasPriorAssistant = messages.some(
-      (message) => message.role === "assistant" && message.content.trim().length > 0,
+      (message) =>
+        message.role === "assistant" && message.content.trim().length > 0,
     );
     const isInitial = !hasPriorAssistant;
 
@@ -311,7 +369,9 @@ export function AskViewModal({
     }
 
     if (!isInitial && !sessionContext) {
-      setError("This chat is missing its original view context. Start a new chat for the current view.");
+      setError(
+        "This chat is missing its original view context. Start a new chat for the current view.",
+      );
       return;
     }
 
@@ -342,7 +402,8 @@ export function AskViewModal({
     let assistantText = "";
 
     try {
-      const imageDataUrl = isInitial && imageUrl ? await imageToDataUrl(imageUrl) : undefined;
+      const imageDataUrl =
+        isInitial && imageUrl ? await imageToDataUrl(imageUrl) : undefined;
 
       setMessages([...nextMessages, { role: "assistant", content: "" }]);
 
@@ -361,13 +422,25 @@ export function AskViewModal({
 
           if (streamEvent.type === "delta") {
             assistantText += streamEvent.delta;
-            setMessages([...nextMessages, { role: "assistant", content: assistantText }]);
+            setMessages([
+              ...nextMessages,
+              { role: "assistant", content: assistantText },
+            ]);
             return;
           }
 
           assistantText = streamEvent.message;
-          setMessages([...nextMessages, { role: "assistant", content: assistantText }]);
-          setViewBriefing(streamEvent.viewBriefing ?? (isInitial ? null : viewBriefing));
+          setMessages([
+            ...nextMessages,
+            {
+              role: "assistant",
+              content: assistantText,
+              sources: streamEvent.sources ?? [],
+            },
+          ]);
+          setViewBriefing(
+            streamEvent.viewBriefing ?? (isInitial ? null : viewBriefing),
+          );
         },
       );
     } catch (requestError) {
@@ -375,27 +448,41 @@ export function AskViewModal({
         setMessages(nextMessages);
       }
 
-      setError(requestError instanceof Error ? requestError.message : "Ask View request failed.");
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Ask View request failed.",
+      );
     } finally {
       setLoading(false);
     }
   }
 
   async function retryInitialRequest() {
-    const firstUserMessage = messages.find((message) => message.role === "user");
+    const firstUserMessage = messages.find(
+      (message) => message.role === "user",
+    );
 
-    if (!firstUserMessage?.content.trim() || !imageUrl || !viewContext || loading) {
+    if (
+      !firstUserMessage?.content.trim() ||
+      !imageUrl ||
+      !viewContext ||
+      loading
+    ) {
       return;
     }
 
-    const initialMessages = [{ role: "user" as const, content: firstUserMessage.content.trim() }];
+    const initialMessages = [
+      { role: "user" as const, content: firstUserMessage.content.trim() },
+    ];
+    const retryProvider = askProvider;
 
     setMessages(initialMessages);
     setInput("");
     setError(null);
     setViewBriefing(null);
     setSessionSignature(viewSignature);
-    setSessionProvider(askProvider);
+    setSessionProvider(retryProvider);
     setSessionContext(viewContext);
     setSessionImageUrl(imageUrl);
     setLoading(true);
@@ -409,7 +496,7 @@ export function AskViewModal({
 
       await requestAskViewStream(
         {
-          provider: sessionProvider,
+          provider: retryProvider,
           messages: initialMessages,
           viewContext,
           imageDataUrl,
@@ -421,12 +508,22 @@ export function AskViewModal({
 
           if (streamEvent.type === "delta") {
             assistantText += streamEvent.delta;
-            setMessages([...initialMessages, { role: "assistant", content: assistantText }]);
+            setMessages([
+              ...initialMessages,
+              { role: "assistant", content: assistantText },
+            ]);
             return;
           }
 
           assistantText = streamEvent.message;
-          setMessages([...initialMessages, { role: "assistant", content: assistantText }]);
+          setMessages([
+            ...initialMessages,
+            {
+              role: "assistant",
+              content: assistantText,
+              sources: streamEvent.sources ?? [],
+            },
+          ]);
           setViewBriefing(streamEvent.viewBriefing ?? null);
         },
       );
@@ -435,7 +532,11 @@ export function AskViewModal({
         setMessages(initialMessages);
       }
 
-      setError(requestError instanceof Error ? requestError.message : "Ask View request failed.");
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Ask View request failed.",
+      );
     } finally {
       setLoading(false);
     }
@@ -451,7 +552,8 @@ export function AskViewModal({
               Ask AI
             </DialogTitle>
             <DialogDescription>
-              {providerLabel(activeProvider)} - {displayedContext?.providerName ?? "Current view"}
+              {providerLabel(activeProvider)} -{" "}
+              {displayedContext?.providerName ?? "Current view"}
             </DialogDescription>
           </DialogHeader>
 
@@ -475,14 +577,18 @@ export function AskViewModal({
               <div className="mb-4 rounded-md border border-border bg-background/45 p-3 text-xs text-muted-foreground">
                 <div className="grid gap-2 sm:grid-cols-2">
                   <div>
-                    <div className="font-medium text-foreground">{displayedContext.coordinates}</div>
+                    <div className="font-medium text-foreground">
+                      {displayedContext.coordinates}
+                    </div>
                     <div>{displayedContext.captureLabel}</div>
                   </div>
                   <div>
-                    <div className="font-medium text-foreground">{displayedContext.providerName}</div>
+                    <div className="font-medium text-foreground">
+                      {displayedContext.providerName}
+                    </div>
                     <div>
-                      {displayedContext.satellite} - {displayedContext.category} -{" "}
-                      {displayedContext.resolutionMeters}m nominal
+                      {displayedContext.satellite} - {displayedContext.category}{" "}
+                      - {displayedContext.resolutionMeters}m nominal
                     </div>
                   </div>
                 </div>
@@ -514,7 +620,12 @@ export function AskViewModal({
                 <div className="mb-2 text-xs text-muted-foreground">
                   The imagery view changed after this chat started.
                 </div>
-                <Button type="button" variant="outline" size="sm" onClick={resetForCurrentView}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={resetForCurrentView}
+                >
                   <RefreshCcw className="h-3.5 w-3.5" />
                   Start chat for current view
                 </Button>
@@ -524,7 +635,8 @@ export function AskViewModal({
             <div className="space-y-3">
               {messages.length === 0 && !loading && !error && (
                 <div className="rounded-md border border-dashed border-border bg-background/35 px-3 py-6 text-center text-sm text-muted-foreground">
-                  Ask a question about the current satellite view to start the chat.
+                  Ask a question about the current satellite view to start the
+                  chat.
                 </div>
               )}
 
@@ -542,7 +654,27 @@ export function AskViewModal({
                         : "ml-auto max-w-[82%] border-primary/40 bg-primary/15 text-foreground"
                     }`}
                   >
-                    {message.content}
+                    <div>{message.content}</div>
+                    {message.role === "assistant" && message.sources?.length ? (
+                      <div className="mt-3 border-t border-border/60 pt-2">
+                        <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                          Sources
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {message.sources.map((source, sourceIndex) => (
+                            <a
+                              key={source.url}
+                              href={source.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="rounded border border-border bg-background/65 px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+                            >
+                              {sourceLabel(source, sourceIndex)}
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}
@@ -559,7 +691,12 @@ export function AskViewModal({
                   {error}
                   {!loading && messages.length > 0 && (
                     <div className="mt-2">
-                      <Button type="button" variant="outline" size="sm" onClick={() => void retryInitialRequest()}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void retryInitialRequest()}
+                      >
                         <RefreshCcw className="h-3.5 w-3.5" />
                         Retry analysis
                       </Button>
@@ -570,12 +707,19 @@ export function AskViewModal({
             </div>
           </div>
 
-          <form onSubmit={sendMessage} className="flex gap-2 border-t border-border p-4">
+          <form
+            onSubmit={sendMessage}
+            className="flex gap-2 border-t border-border p-4"
+          >
             <input
               value={input}
               onChange={(event) => setInput(event.target.value)}
               disabled={inputDisabled}
-              placeholder={sessionStarted ? "Ask a follow-up about this view" : "Ask about this view"}
+              placeholder={
+                sessionStarted
+                  ? "Ask a follow-up about this view"
+                  : "Ask about this view"
+              }
               className="flex h-10 min-w-0 flex-1 rounded-md border border-input bg-background/70 px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-50"
             />
             <Button type="submit" disabled={inputDisabled || !input.trim()}>

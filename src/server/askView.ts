@@ -12,6 +12,16 @@ export type AskChatMessage = {
   content: string;
 };
 
+export type AskViewSource = {
+  title?: string;
+  url: string;
+};
+
+export type AskViewSentinelScene = {
+  dateTime: string;
+  cloudCover?: number | null;
+};
+
 export type AskViewContext = {
   coordinates: string;
   lat: number;
@@ -23,7 +33,11 @@ export type AskViewContext = {
   satellite: string;
   category: string;
   resolutionMeters: number;
+  providerSummary?: string;
+  providerBestFor?: string;
+  providerCaveat?: string;
   sentinelVariantId?: string;
+  sentinelScenes?: AskViewSentinelScene[];
   bbox?: BoundingBox | null;
   imageryZoomDegrees: number;
   imageWidth?: number | null;
@@ -73,7 +87,13 @@ type AnthropicResponse = {
 
 export type AskViewStreamEvent =
   | { type: "delta"; delta: string }
-  | { type: "done"; message: string; viewBriefing: string; usage?: unknown };
+  | {
+      type: "done";
+      message: string;
+      viewBriefing: string;
+      sources?: AskViewSource[];
+      usage?: unknown;
+    };
 
 export class AskViewError extends Error {
   status: number;
@@ -105,8 +125,12 @@ function validateRequest(input: AskViewRequest) {
     throw new AskViewError("Missing view context.", 400);
   }
 
-  const messages = Array.isArray(input.messages) ? input.messages.slice(-12) : [];
-  const hasPriorAssistant = messages.some((message) => message.role === "assistant");
+  const messages = Array.isArray(input.messages)
+    ? input.messages.slice(-12)
+    : [];
+  const hasPriorAssistant = messages.some(
+    (message) => message.role === "assistant",
+  );
 
   if (!hasPriorAssistant && !input.imageDataUrl) {
     throw new AskViewError("Missing image for the initial view analysis.", 400);
@@ -134,7 +158,11 @@ function viewContextText(viewContext: AskViewContext) {
       satellite: viewContext.satellite,
       category: viewContext.category,
       resolutionMeters: viewContext.resolutionMeters,
+      providerSummary: viewContext.providerSummary,
+      providerBestFor: viewContext.providerBestFor,
+      providerCaveat: viewContext.providerCaveat,
       sentinelVariantId: viewContext.sentinelVariantId,
+      sentinelScenes: viewContext.sentinelScenes,
       bbox: viewContext.bbox,
       imageryZoomDegrees: viewContext.imageryZoomDegrees,
       renderedImage: {
@@ -150,16 +178,22 @@ function viewContextText(viewContext: AskViewContext) {
 function systemPrompt() {
   return [
     "You are analyzing satellite imagery for an exploratory Earth-observation app.",
-    "Use the supplied image and metadata to explain what is visible, what the imagery layer is useful for, and what can only be inferred uncertainly.",
-    "Distinguish visible evidence from inference. Mention uncertainty and avoid exact identification when the imagery cannot support it.",
+    "Treat the image as primary evidence, and treat coordinates, date, layer metadata, scene metadata, and web results as context that can identify named places or likely processes.",
+    "For every initial view analysis, use web search for coordinate and bbox context when tools are available, even if the user does not explicitly ask to look online. Search the coordinates, nearby place names, and visible infrastructure/geographic clues.",
+    "Lead with the most likely identification in plain language, then explain the visible evidence, supporting online context, and remaining uncertainty.",
+    "Be more definitive when the image plus sourced context supports it. Be explicit when a claim is only a visual hypothesis.",
+    "Distinguish visible evidence from inference. Mention uncertainty, but do not hide behind generic labels when the supplied location context supports a stronger identification.",
     "For radar and false-color imagery, explain how to interpret the colors or backscatter before drawing conclusions.",
-    "If web search tools are available and the user asks for online/current/contextual identification, use web search and cite sources. If no web search is used, say the answer is based on the image, metadata, and general remote-sensing knowledge.",
+    "Cite online context inline with source names or URLs. If web search is unavailable or returns nothing useful, say that clearly and answer from image evidence and metadata.",
     "Keep answers useful and concise. For the hidden view briefing, summarize stable visual/context facts for follow-up turns.",
   ].join("\n");
 }
 
 function currentQuestion(messages: AskChatMessage[]) {
-  return messages.at(-1)?.content?.trim() || "Explain what is visible in this satellite view and what this imagery layer is useful for.";
+  return (
+    messages.at(-1)?.content?.trim() ||
+    "Explain what is visible in this satellite view and what this imagery layer is useful for."
+  );
 }
 
 function briefingInstruction() {
@@ -169,8 +203,66 @@ function briefingInstruction() {
     "<user-facing answer>",
     "",
     "VIEW_BRIEFING:",
-    "<compact hidden summary of the image, metadata, caveats, and notable visible features for follow-up turns>",
+    "<compact hidden summary of the image, metadata, sourced location context, source URLs used, caveats, and notable visible features for follow-up turns>",
   ].join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sourceTitle(record: Record<string, unknown>) {
+  for (const key of ["title", "name", "source", "site_name", "domain"]) {
+    const value = record[key];
+
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function addSourcesFromValue(
+  value: unknown,
+  sources: Map<string, AskViewSource>,
+  depth = 0,
+) {
+  if (depth > 10 || value === null || value === undefined) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => addSourcesFromValue(item, sources, depth + 1));
+    return;
+  }
+
+  if (!isRecord(value)) {
+    return;
+  }
+
+  const maybeUrl = value.url ?? value.uri;
+
+  if (typeof maybeUrl === "string" && /^https?:\/\//i.test(maybeUrl)) {
+    const url = maybeUrl.trim();
+
+    if (!sources.has(url)) {
+      sources.set(url, {
+        title: sourceTitle(value),
+        url,
+      });
+    }
+  }
+
+  Object.values(value).forEach((child) =>
+    addSourcesFromValue(child, sources, depth + 1),
+  );
+}
+
+function sourcesFrom(...values: unknown[]) {
+  const sources = new Map<string, AskViewSource>();
+  values.forEach((value) => addSourcesFromValue(value, sources));
+  return Array.from(sources.values()).slice(0, 8);
 }
 
 function splitBriefing(text: string) {
@@ -179,7 +271,8 @@ function splitBriefing(text: string) {
   const markerIndex = text.indexOf(marker);
   const rawAnswer = markerIndex >= 0 ? text.slice(0, markerIndex) : text;
   const message = rawAnswer.replace(answerMarker, "").trim();
-  const viewBriefing = markerIndex >= 0 ? text.slice(markerIndex + marker.length).trim() : "";
+  const viewBriefing =
+    markerIndex >= 0 ? text.slice(markerIndex + marker.length).trim() : "";
 
   return {
     message: message || text.trim(),
@@ -235,7 +328,8 @@ class BriefingStreamSplitter {
 
   done() {
     const parsed = splitBriefing(this.raw);
-    const finalDelta = parsed.message.length > this.sent ? parsed.message.slice(this.sent) : "";
+    const finalDelta =
+      parsed.message.length > this.sent ? parsed.message.slice(this.sent) : "";
     this.sent = parsed.message.length;
 
     return {
@@ -256,6 +350,7 @@ function askViewUserText(request: ReturnType<typeof validateRequest>) {
   return isInitial
     ? [
         "Analyze the current satellite view.",
+        "Before answering, search online for context around the coordinates, bbox, date, and visible clues. Use that context to identify nearby named places, infrastructure, coastal features, ports, mines, roads, canals, dams, or other likely features when possible.",
         "View context:",
         context,
         `Question: ${currentQuestion(request.messages)}`,
@@ -263,14 +358,22 @@ function askViewUserText(request: ReturnType<typeof validateRequest>) {
       ].join("\n\n")
     : [
         "Continue the satellite imagery discussion.",
-        request.viewBriefing ? `Retained view briefing:\n${request.viewBriefing}` : "",
+        "Use the retained briefing for the original image. If this follow-up asks for identification, local context, current facts, or outside confirmation, search online again when useful and cite sources.",
+        request.viewBriefing
+          ? `Retained view briefing:\n${request.viewBriefing}`
+          : "",
         `View context:\n${context}`,
         `Question: ${currentQuestion(request.messages)}`,
         briefingInstruction(),
-      ].filter(Boolean).join("\n\n");
+      ]
+        .filter(Boolean)
+        .join("\n\n");
 }
 
-function openAiBody(request: ReturnType<typeof validateRequest>, stream = false) {
+function openAiBody(
+  request: ReturnType<typeof validateRequest>,
+  stream = false,
+) {
   const userText = askViewUserText(request);
   const input = [
     ...request.messages.slice(0, -1).map((message) => ({
@@ -313,9 +416,14 @@ function openAiBody(request: ReturnType<typeof validateRequest>, stream = false)
   };
 }
 
-function anthropicBody(request: ReturnType<typeof validateRequest>, stream = false) {
+function anthropicBody(
+  request: ReturnType<typeof validateRequest>,
+  stream = false,
+) {
   const userText = askViewUserText(request);
-  const image = request.imageDataUrl ? dataUrlParts(request.imageDataUrl) : null;
+  const image = request.imageDataUrl
+    ? dataUrlParts(request.imageDataUrl)
+    : null;
   const priorMessages = request.messages.slice(0, -1).map((message) => ({
     role: message.role,
     content: message.content,
@@ -387,7 +495,10 @@ function anthropicText(response: AnthropicResponse) {
     .trim();
 }
 
-async function callOpenAi(request: ReturnType<typeof validateRequest>, apiKey: string) {
+async function callOpenAi(
+  request: ReturnType<typeof validateRequest>,
+  apiKey: string,
+) {
   const response = await fetch(OPENAI_RESPONSES_URL, {
     method: "POST",
     headers: {
@@ -398,23 +509,29 @@ async function callOpenAi(request: ReturnType<typeof validateRequest>, apiKey: s
   });
 
   if (!response.ok) {
-    throw new AskViewError(await response.text() || "OpenAI request failed.", response.status);
+    throw new AskViewError(
+      (await response.text()) || "OpenAI request failed.",
+      response.status,
+    );
   }
 
   const body = (await response.json()) as OpenAIResponse;
   const parsed = splitBriefing(openAiText(body));
+  const sources = sourcesFrom(body);
 
   if (!parsed.message.trim()) {
     throw new AskViewError(
       body.incomplete_details?.reason
         ? `OpenAI finished without analysis text. Reason: ${body.incomplete_details.reason}.`
-        : body.error?.message ?? "OpenAI finished without returning analysis text.",
+        : (body.error?.message ??
+            "OpenAI finished without returning analysis text."),
       502,
     );
   }
 
   return {
     ...parsed,
+    sources,
     usage: body.usage,
   };
 }
@@ -432,7 +549,10 @@ function dataUrlParts(dataUrl: string) {
   };
 }
 
-async function callAnthropic(request: ReturnType<typeof validateRequest>, apiKey: string) {
+async function callAnthropic(
+  request: ReturnType<typeof validateRequest>,
+  apiKey: string,
+) {
   const response = await fetch(ANTHROPIC_MESSAGES_URL, {
     method: "POST",
     headers: {
@@ -444,19 +564,27 @@ async function callAnthropic(request: ReturnType<typeof validateRequest>, apiKey
   });
 
   if (!response.ok) {
-    throw new AskViewError(await response.text() || "Anthropic request failed.", response.status);
+    throw new AskViewError(
+      (await response.text()) || "Anthropic request failed.",
+      response.status,
+    );
   }
 
   const body = (await response.json()) as AnthropicResponse;
   const parsed = splitBriefing(anthropicText(body));
+  const sources = sourcesFrom(body);
 
   return {
     ...parsed,
+    sources,
     usage: body.usage,
   };
 }
 
-async function readEventStream(response: Response, onEvent: (event: unknown) => Promise<void> | void) {
+async function readEventStream(
+  response: Response,
+  onEvent: (event: unknown) => Promise<void> | void,
+) {
   if (!response.body) {
     throw new AskViewError("AI provider returned an empty stream.", 502);
   }
@@ -503,6 +631,7 @@ async function callOpenAiStream(
   let usage: unknown;
   let completedText = "";
   let sawTextDelta = false;
+  const sources = new Map<string, AskViewSource>();
 
   const response = await fetch(OPENAI_RESPONSES_URL, {
     method: "POST",
@@ -514,7 +643,10 @@ async function callOpenAiStream(
   });
 
   if (!response.ok) {
-    throw new AskViewError(await response.text() || "OpenAI request failed.", response.status);
+    throw new AskViewError(
+      (await response.text()) || "OpenAI request failed.",
+      response.status,
+    );
   }
 
   await readEventStream(response, async (event) => {
@@ -527,9 +659,13 @@ async function callOpenAiStream(
       error?: { message?: string };
     };
 
+    addSourcesFromValue(typedEvent, sources);
+
     if (typedEvent.type === "response.failed" || typedEvent.type === "error") {
       throw new AskViewError(
-        typedEvent.error?.message ?? typedEvent.response?.error?.message ?? "OpenAI stream failed.",
+        typedEvent.error?.message ??
+          typedEvent.response?.error?.message ??
+          "OpenAI stream failed.",
         502,
       );
     }
@@ -543,17 +679,23 @@ async function callOpenAiStream(
       }
     }
 
-    if (typedEvent.type === "response.content_part.done" && typedEvent.part?.type === "output_text") {
+    if (
+      typedEvent.type === "response.content_part.done" &&
+      typedEvent.part?.type === "output_text"
+    ) {
       completedText = typedEvent.part.text ?? completedText;
     }
 
     if (typedEvent.type === "response.output_item.done" && typedEvent.item) {
-      completedText = openAiText({ output: [typedEvent.item] }) || completedText;
+      completedText =
+        openAiText({ output: [typedEvent.item] }) || completedText;
     }
 
     if (typedEvent.type === "response.completed") {
       usage = typedEvent.response?.usage;
-      completedText = typedEvent.response ? openAiText(typedEvent.response) || completedText : completedText;
+      completedText = typedEvent.response
+        ? openAiText(typedEvent.response) || completedText
+        : completedText;
     }
 
     if (typedEvent.type === "response.incomplete") {
@@ -577,10 +719,19 @@ async function callOpenAiStream(
   }
 
   if (!parsed.message.trim()) {
-    throw new AskViewError("OpenAI finished without returning analysis text.", 502);
+    throw new AskViewError(
+      "OpenAI finished without returning analysis text.",
+      502,
+    );
   }
 
-  await onEvent({ type: "done", message: parsed.message, viewBriefing: parsed.viewBriefing, usage });
+  await onEvent({
+    type: "done",
+    message: parsed.message,
+    viewBriefing: parsed.viewBriefing,
+    sources: Array.from(sources.values()).slice(0, 8),
+    usage,
+  });
 }
 
 async function callAnthropicStream(
@@ -590,6 +741,7 @@ async function callAnthropicStream(
 ) {
   const splitter = new BriefingStreamSplitter();
   let usage: unknown;
+  const sources = new Map<string, AskViewSource>();
 
   const response = await fetch(ANTHROPIC_MESSAGES_URL, {
     method: "POST",
@@ -602,7 +754,10 @@ async function callAnthropicStream(
   });
 
   if (!response.ok) {
-    throw new AskViewError(await response.text() || "Anthropic request failed.", response.status);
+    throw new AskViewError(
+      (await response.text()) || "Anthropic request failed.",
+      response.status,
+    );
   }
 
   await readEventStream(response, async (event) => {
@@ -613,11 +768,19 @@ async function callAnthropicStream(
       usage?: unknown;
     };
 
+    addSourcesFromValue(typedEvent, sources);
+
     if (typedEvent.type === "error") {
-      throw new AskViewError(typedEvent.error?.message ?? "Anthropic stream failed.", 502);
+      throw new AskViewError(
+        typedEvent.error?.message ?? "Anthropic stream failed.",
+        502,
+      );
     }
 
-    if (typedEvent.type === "content_block_delta" && typedEvent.delta?.type === "text_delta") {
+    if (
+      typedEvent.type === "content_block_delta" &&
+      typedEvent.delta?.type === "text_delta"
+    ) {
       const visibleDelta = splitter.feed(typedEvent.delta.text ?? "");
 
       if (visibleDelta) {
@@ -637,10 +800,19 @@ async function callAnthropicStream(
   }
 
   if (!parsed.message.trim()) {
-    throw new AskViewError("Anthropic finished without returning analysis text.", 502);
+    throw new AskViewError(
+      "Anthropic finished without returning analysis text.",
+      502,
+    );
   }
 
-  await onEvent({ type: "done", message: parsed.message, viewBriefing: parsed.viewBriefing, usage });
+  await onEvent({
+    type: "done",
+    message: parsed.message,
+    viewBriefing: parsed.viewBriefing,
+    sources: Array.from(sources.values()).slice(0, 8),
+    usage,
+  });
 }
 
 export async function askAboutView(input: AskViewRequest, env: AskViewEnv) {
@@ -661,9 +833,17 @@ export async function streamAskAboutView(
   const request = validateRequest(input);
 
   if (request.provider === "openai") {
-    await callOpenAiStream(request, requireKey(env.OPENAI_API_KEY, "openai"), onEvent);
+    await callOpenAiStream(
+      request,
+      requireKey(env.OPENAI_API_KEY, "openai"),
+      onEvent,
+    );
     return;
   }
 
-  await callAnthropicStream(request, requireKey(env.ANTHROPIC_API_KEY, "anthropic"), onEvent);
+  await callAnthropicStream(
+    request,
+    requireKey(env.ANTHROPIC_API_KEY, "anthropic"),
+    onEvent,
+  );
 }

@@ -2,7 +2,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { LoaderCircle } from "lucide-react";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Raycaster, Sphere, Vector2, Vector3 } from "three";
+import { Quaternion, Raycaster, Sphere, Vector2, Vector3 } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { buildGlobalGibsTextureUrl } from "@/providers/GibsProvider";
 import { getImageryProvider } from "@/providers/registry";
@@ -32,6 +32,7 @@ const VIEW_REPORT_INTERVAL = 8;
 const INITIAL_GLOBE_TEXTURE_WIDTH = 4096;
 const DETAILED_GLOBE_TEXTURE_WIDTH = 8192;
 const DETAIL_DISTANCE_MATCH_ITERATIONS = 14;
+const CURSOR_ZOOM_ANCHOR_ITERATIONS = 6;
 
 function zoomProgressForDistance(distance: number) {
   const progress = (distance - MIN_GLOBE_DISTANCE) / (MAX_GLOBE_DISTANCE - MIN_GLOBE_DISTANCE);
@@ -63,19 +64,28 @@ function AdaptiveControls() {
   const sphereRef = useRef(new Sphere(undefined, 1));
   const centerPointRef = useRef(new Vector2(0, 0));
   const intersectionRef = useRef(new Vector3());
+  const cursorAnchorRef = useRef(new Vector3());
+  const cursorHitRef = useRef(new Vector3());
+  const cursorCorrectionRef = useRef(new Quaternion());
+
+  const readSurfaceVector = useCallback(
+    (ndcX: number, ndcY: number, target: Vector3) => {
+      raycasterRef.current.setFromCamera(centerPointRef.current.set(ndcX, ndcY), camera);
+
+      const point = raycasterRef.current.ray.intersectSphere(sphereRef.current, target);
+
+      return point ? target.copy(point).normalize() : null;
+    },
+    [camera],
+  );
 
   const readSurfacePoint = useCallback(
     (ndcX: number, ndcY: number) => {
-      raycasterRef.current.setFromCamera(centerPointRef.current.set(ndcX, ndcY), camera);
-
-      const point = raycasterRef.current.ray.intersectSphere(
-        sphereRef.current,
-        intersectionRef.current,
-      );
+      const point = readSurfaceVector(ndcX, ndcY, intersectionRef.current);
 
       return point ? pointToLatLon(point) : null;
     },
-    [camera],
+    [readSurfaceVector],
   );
 
   const readCurrentView = useCallback(() => {
@@ -158,30 +168,73 @@ function AdaptiveControls() {
   useEffect(() => {
     const element = gl.domElement;
 
-    function handleShiftWheel(event: WheelEvent) {
-      const controls = controlsRef.current;
+    function dolly(controls: OrbitControlsImpl, deltaY: number, shiftKey: boolean) {
+      const zoomMultiplier = shiftKey ? SHIFT_WHEEL_ZOOM_MULTIPLIER : 1;
+      const zoomScale = Math.pow(controls.getZoomScale(), zoomMultiplier);
 
-      if (!controls || !event.shiftKey || event.deltaY === 0) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopImmediatePropagation();
-
-      const zoomScale = Math.pow(controls.getZoomScale(), SHIFT_WHEEL_ZOOM_MULTIPLIER);
-
-      if (event.deltaY < 0) {
+      if (deltaY < 0) {
         controls.dollyIn(zoomScale);
       } else {
         controls.dollyOut(zoomScale);
       }
     }
 
-    element.addEventListener("wheel", handleShiftWheel, { capture: true, passive: false });
+    function handleWheel(event: WheelEvent) {
+      const controls = controlsRef.current;
+
+      if (!controls || event.deltaY === 0) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      const rect = element.getBoundingClientRect();
+      const hasPointer =
+        rect.width > 0 &&
+        rect.height > 0 &&
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+      const ndcX = hasPointer ? ((event.clientX - rect.left) / rect.width) * 2 - 1 : 0;
+      const ndcY = hasPointer ? -(((event.clientY - rect.top) / rect.height) * 2 - 1) : 0;
+      const anchor = hasPointer ? readSurfaceVector(ndcX, ndcY, cursorAnchorRef.current) : null;
+      const originalDamping = controls.enableDamping;
+
+      controls.enableDamping = false;
+      controls.target.set(0, 0, 0);
+      dolly(controls, event.deltaY, event.shiftKey);
+      controls.update();
+
+      if (anchor) {
+        for (let index = 0; index < CURSOR_ZOOM_ANCHOR_ITERATIONS; index += 1) {
+          const currentHit = readSurfaceVector(ndcX, ndcY, cursorHitRef.current);
+
+          if (!currentHit) {
+            break;
+          }
+
+          if (currentHit.angleTo(anchor) < 0.0001) {
+            break;
+          }
+
+          cursorCorrectionRef.current.setFromUnitVectors(currentHit, anchor);
+          camera.position.applyQuaternion(cursorCorrectionRef.current);
+          camera.lookAt(controls.target);
+          camera.updateMatrixWorld();
+          controls.update();
+        }
+      }
+
+      controls.enableDamping = originalDamping;
+    }
+
+    element.addEventListener("wheel", handleWheel, { capture: true, passive: false });
     return () => {
-      element.removeEventListener("wheel", handleShiftWheel, { capture: true });
+      element.removeEventListener("wheel", handleWheel, { capture: true });
     };
-  }, [gl]);
+  }, [camera, gl, readSurfaceVector]);
 
   useFrame(() => {
     const controls = controlsRef.current;

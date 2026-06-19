@@ -1,4 +1,11 @@
-import { Bot, ExternalLink, Film, LoaderCircle, MapPinned, Satellite } from "lucide-react";
+import {
+  Bot,
+  ExternalLink,
+  Film,
+  LoaderCircle,
+  MapPinned,
+  Satellite,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,7 +22,10 @@ import {
   formatSentinelCaptureTime,
   formatSceneAcquisition,
 } from "@/lib/captureTime";
-import { getImageryProvider, modalImageryProviders } from "@/providers/registry";
+import {
+  getImageryProvider,
+  modalImageryProviders,
+} from "@/providers/registry";
 import { useAppStore } from "@/store/useAppStore";
 import type {
   BoundingBox,
@@ -24,9 +34,7 @@ import type {
 } from "@/types/imagery";
 import { DatePicker } from "./DatePicker";
 import { ImageryInfoButton, ImageryInfoModal } from "./ImageryInfoModal";
-import {
-  TIME_LAPSE_SPEEDS,
-} from "./hooks/imageryModalHelpers";
+import { TIME_LAPSE_SPEEDS } from "./hooks/imageryModalHelpers";
 import { useModalPaneSize } from "./hooks/useModalPaneSize";
 import { useObjectUrls } from "./hooks/useObjectUrls";
 import { useRegionalImagery } from "./hooks/useRegionalImagery";
@@ -41,7 +49,10 @@ const SCENE_FOOTPRINT_STROKE = "#34d399";
 // longer than the fade so the incoming image is fully opaque before removal.
 const SENTINEL_CROSSFADE_HOLD_MS = 300;
 
-function viewSignature(context: AskViewContext | null, imageUrl: string | null) {
+function viewSignature(
+  context: AskViewContext | null,
+  imageUrl: string | null,
+) {
   if (!context || !imageUrl) {
     return "";
   }
@@ -89,8 +100,9 @@ function ringPath(ring: SentinelScenePosition[], bbox: BoundingBox) {
   }
 
   return `${points
-    .map((point, index) =>
-      `${index === 0 ? "M" : "L"} ${point.x.toFixed(3)} ${point.y.toFixed(3)}`,
+    .map(
+      (point, index) =>
+        `${index === 0 ? "M" : "L"} ${point.x.toFixed(3)} ${point.y.toFixed(3)}`,
     )
     .join(" ")} Z`;
 }
@@ -180,10 +192,13 @@ export function ImageryModal() {
   } = useAppStore();
   const [infoOpen, setInfoOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
-  const [hoveredSceneDateTime, setHoveredSceneDateTime] = useState<string | null>(null);
-  const [imageFadeOutLayer, setImageFadeOutLayer] = useState<{ url: string; transform: string } | null>(
-    null,
-  );
+  const [hoveredSceneDateTime, setHoveredSceneDateTime] = useState<
+    string | null
+  >(null);
+  const [imageFadeOutLayer, setImageFadeOutLayer] = useState<{
+    url: string;
+    transform: string;
+  } | null>(null);
   const provider = getImageryProvider(layerId);
   const selectedLon = selectedPoint?.lon;
   const isRegionalSentinel = Boolean(provider.sentinelVariantId);
@@ -191,7 +206,8 @@ export function ImageryModal() {
   const regionalUpdatingMessage = provider.loadingMessage
     ? `Updating. ${provider.loadingMessage}`
     : "Updating";
-  const { imagePaneRef, imagePaneSize, setImagePaneRef } = useModalPaneSize(modalOpen);
+  const { imagePaneRef, imagePaneSize, setImagePaneRef } =
+    useModalPaneSize(modalOpen);
   const { createObjectUrl, revokeObjectUrl } = useObjectUrls();
   const regionalImagery = useRegionalImagery({
     selectedPoint,
@@ -239,7 +255,11 @@ export function ImageryModal() {
 
       const index = Number(event.key) - 1;
 
-      if (!Number.isInteger(index) || index < 0 || index >= modalImageryProviders.length) {
+      if (
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index >= modalImageryProviders.length
+      ) {
         return;
       }
 
@@ -252,7 +272,10 @@ export function ImageryModal() {
   }, [modalOpen, setLayer]);
 
   useEffect(() => {
-    document.body.classList.toggle("map-dragging-modal", Boolean(regionalImagery.regionalDragStart));
+    document.body.classList.toggle(
+      "map-dragging-modal",
+      Boolean(regionalImagery.regionalDragStart),
+    );
 
     return () => {
       document.body.classList.remove("map-dragging-modal");
@@ -283,7 +306,10 @@ export function ImageryModal() {
       return;
     }
 
-    const layer = { url: previousUrl, transform: liveImageTransformRef.current };
+    const layer = {
+      url: previousUrl,
+      transform: liveImageTransformRef.current,
+    };
     setImageFadeOutLayer(layer);
 
     const timer = window.setTimeout(() => {
@@ -303,10 +329,16 @@ export function ImageryModal() {
   const googleMapsUrl = selectedPoint
     ? `https://www.google.com/maps/search/?api=1&query=${selectedPoint.lat},${selectedPoint.lon}`
     : "";
-  const regionalCaptureLabel = formatGibsCaptureTime(date, provider.id, selectedLon);
+  const regionalCaptureLabel = formatGibsCaptureTime(
+    date,
+    provider.id,
+    selectedLon,
+  );
   const acquiredScenes = regionalImagery.acquiredScenes;
   const hoveredScene = hoveredSceneDateTime
-    ? acquiredScenes.find((scene) => scene.dateTime === hoveredSceneDateTime) ?? null
+    ? (acquiredScenes.find(
+        (scene) => scene.dateTime === hoveredSceneDateTime,
+      ) ?? null)
     : null;
   const mostRecentSceneTime = acquiredScenes[0]?.dateTime ?? null;
   const regionalProviderCaptureLabel = provider.sentinelVariantId
@@ -329,19 +361,29 @@ export function ImageryModal() {
         satellite: provider.satellite,
         category: provider.category,
         resolutionMeters: provider.resolution,
+        providerSummary: provider.summary,
+        providerBestFor: provider.bestFor,
+        providerCaveat: provider.caveat,
         sentinelVariantId: provider.sentinelVariantId,
+        sentinelScenes: acquiredScenes.map((scene) => ({
+          dateTime: scene.dateTime,
+          cloudCover: scene.cloudCover ?? null,
+        })),
         bbox: regionalImagery.bbox,
         imageryZoomDegrees,
         imageWidth: imagePaneSize?.width ?? null,
         imageHeight: imagePaneSize?.height ?? null,
       }
     : null;
-  const askViewSignature = viewSignature(askViewContext, regionalImagery.imageUrl);
+  const askViewSignature = viewSignature(
+    askViewContext,
+    regionalImagery.imageUrl,
+  );
   const askReady = Boolean(
     regionalImagery.imageUrl &&
-      askViewContext &&
-      regionalImagery.bbox &&
-      !regionalImagery.imageLoading,
+    askViewContext &&
+    regionalImagery.bbox &&
+    !regionalImagery.imageLoading,
   );
 
   function handleOpenChange(open: boolean) {
@@ -393,15 +435,27 @@ export function ImageryModal() {
               }
 
               regionalImagery.setRegionalPan({
-                x: regionalImagery.regionalDragStart.originX + event.clientX - regionalImagery.regionalDragStart.x,
-                y: regionalImagery.regionalDragStart.originY + event.clientY - regionalImagery.regionalDragStart.y,
+                x:
+                  regionalImagery.regionalDragStart.originX +
+                  event.clientX -
+                  regionalImagery.regionalDragStart.x,
+                y:
+                  regionalImagery.regionalDragStart.originY +
+                  event.clientY -
+                  regionalImagery.regionalDragStart.y,
               });
             }}
             onPointerUp={(event) => {
               const nextPan = regionalImagery.regionalDragStart
                 ? {
-                    x: regionalImagery.regionalDragStart.originX + event.clientX - regionalImagery.regionalDragStart.x,
-                    y: regionalImagery.regionalDragStart.originY + event.clientY - regionalImagery.regionalDragStart.y,
+                    x:
+                      regionalImagery.regionalDragStart.originX +
+                      event.clientX -
+                      regionalImagery.regionalDragStart.x,
+                    y:
+                      regionalImagery.regionalDragStart.originY +
+                      event.clientY -
+                      regionalImagery.regionalDragStart.y,
                   }
                 : regionalImagery.regionalPan;
 
@@ -440,13 +494,16 @@ export function ImageryModal() {
                   transform: liveImageTransform,
                   transformOrigin: "center",
                   transition:
-                    regionalImagery.regionalDragStart || regionalImagery.imageLoading
+                    regionalImagery.regionalDragStart ||
+                    regionalImagery.imageLoading
                       ? "none"
                       : "transform 160ms ease-out",
                 }}
                 onLoad={() => regionalImagery.setImageLoading(false)}
                 onError={() => {
-                  regionalImagery.setError("Imagery unavailable for this selection.");
+                  regionalImagery.setError(
+                    "Imagery unavailable for this selection.",
+                  );
                   regionalImagery.setImageLoading(false);
                 }}
               />
@@ -461,27 +518,34 @@ export function ImageryModal() {
                   pan={regionalImagery.regionalPan}
                   scaleX={regionalImagery.imagePreviewScaleX}
                   scaleY={regionalImagery.imagePreviewScaleY}
-                  loading={regionalImagery.regionalDragStart !== null || regionalImagery.imageLoading}
+                  loading={
+                    regionalImagery.regionalDragStart !== null ||
+                    regionalImagery.imageLoading
+                  }
                 />
               )}
-            {!regionalImagery.imageUrl && regionalImagery.imageLoading && !regionalImagery.error && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/70">
-                <div className="flex items-center gap-2 rounded-md border border-white/10 bg-background/80 px-3 py-2 text-sm shadow-xl backdrop-blur">
-                  <LoaderCircle className="h-4 w-4 animate-spin text-primary" />
-                  {regionalLoadingMessage}
+            {!regionalImagery.imageUrl &&
+              regionalImagery.imageLoading &&
+              !regionalImagery.error && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/70">
+                  <div className="flex items-center gap-2 rounded-md border border-white/10 bg-background/80 px-3 py-2 text-sm shadow-xl backdrop-blur">
+                    <LoaderCircle className="h-4 w-4 animate-spin text-primary" />
+                    {regionalLoadingMessage}
+                  </div>
                 </div>
-              </div>
-            )}
-            {regionalImagery.imageUrl && regionalImagery.imageLoading && !regionalImagery.error && (
-              <div className="pointer-events-none absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-2 rounded-md border border-white/10 bg-black/65 px-2.5 py-1.5 text-xs text-white/85 shadow-xl backdrop-blur">
-                <LoaderCircle className="h-3.5 w-3.5 animate-spin text-primary" />
-                {isRegionalSentinel
-                  ? regionalImagery.updateReason === "positioning"
-                    ? "Updating positioning"
-                    : "Updating resolution"
-                  : regionalUpdatingMessage}
-              </div>
-            )}
+              )}
+            {regionalImagery.imageUrl &&
+              regionalImagery.imageLoading &&
+              !regionalImagery.error && (
+                <div className="pointer-events-none absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-2 rounded-md border border-white/10 bg-black/65 px-2.5 py-1.5 text-xs text-white/85 shadow-xl backdrop-blur">
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin text-primary" />
+                  {isRegionalSentinel
+                    ? regionalImagery.updateReason === "positioning"
+                      ? "Updating positioning"
+                      : "Updating resolution"
+                    : regionalUpdatingMessage}
+                </div>
+              )}
             {regionalImagery.error && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/80 p-8 text-center text-sm text-muted-foreground">
                 {regionalImagery.error}
@@ -499,7 +563,11 @@ export function ImageryModal() {
             </DialogHeader>
 
             {selectedPoint && (
-              <Button asChild variant="outline" className="w-full justify-start">
+              <Button
+                asChild
+                variant="outline"
+                className="w-full justify-start"
+              >
                 <a href={googleMapsUrl} target="_blank" rel="noreferrer">
                   <ExternalLink className="h-4 w-4" />
                   Open in Google Maps
@@ -547,8 +615,12 @@ export function ImageryModal() {
                               : "hover:bg-white/5 hover:text-foreground focus:bg-emerald-400/10 focus:text-emerald-200 focus:outline-none"
                           }`}
                           onBlur={() => setHoveredSceneDateTime(null)}
-                          onFocus={() => setHoveredSceneDateTime(scene.dateTime)}
-                          onMouseEnter={() => setHoveredSceneDateTime(scene.dateTime)}
+                          onFocus={() =>
+                            setHoveredSceneDateTime(scene.dateTime)
+                          }
+                          onMouseEnter={() =>
+                            setHoveredSceneDateTime(scene.dateTime)
+                          }
                         >
                           {formatSceneAcquisition(scene)}
                         </button>
@@ -560,69 +632,74 @@ export function ImageryModal() {
             </div>
 
             <>
-                <div className="grid grid-cols-2 gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => void (
-                      isRegionalSentinel
-                        ? timeLapse.loadRegionalSentinelTimeLapse(7)
-                        : timeLapse.loadTimeLapse(7)
-                    )}
-                    disabled={timeLapse.timeLapseLoading || !regionalImagery.bbox}
-                    className="w-full"
-                  >
-                    {timeLapse.timeLapseLoading && timeLapse.timeLapseMode === 7 ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Film className="h-4 w-4" />
-                    )}
-                    {isRegionalSentinel ? "7 mosaics" : "7 days"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => void (
-                      isRegionalSentinel
-                        ? timeLapse.loadRegionalSentinelTimeLapse(30)
-                        : timeLapse.loadTimeLapse(30)
-                    )}
-                    disabled={timeLapse.timeLapseLoading || !regionalImagery.bbox}
-                    className="w-full"
-                  >
-                    {timeLapse.timeLapseLoading && timeLapse.timeLapseMode === 30 ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Film className="h-4 w-4" />
-                    )}
-                    {isRegionalSentinel ? "30 mosaics" : "30 days"}
-                  </Button>
-                </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    void (isRegionalSentinel
+                      ? timeLapse.loadRegionalSentinelTimeLapse(7)
+                      : timeLapse.loadTimeLapse(7))
+                  }
+                  disabled={timeLapse.timeLapseLoading || !regionalImagery.bbox}
+                  className="w-full"
+                >
+                  {timeLapse.timeLapseLoading &&
+                  timeLapse.timeLapseMode === 7 ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Film className="h-4 w-4" />
+                  )}
+                  {isRegionalSentinel ? "7 mosaics" : "7 days"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    void (isRegionalSentinel
+                      ? timeLapse.loadRegionalSentinelTimeLapse(30)
+                      : timeLapse.loadTimeLapse(30))
+                  }
+                  disabled={timeLapse.timeLapseLoading || !regionalImagery.bbox}
+                  className="w-full"
+                >
+                  {timeLapse.timeLapseLoading &&
+                  timeLapse.timeLapseMode === 30 ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Film className="h-4 w-4" />
+                  )}
+                  {isRegionalSentinel ? "30 mosaics" : "30 days"}
+                </Button>
+              </div>
 
-                {isRegionalSentinel && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => void timeLapse.loadRegionalSentinelFiveYearTimeLapse()}
-                    disabled={timeLapse.timeLapseLoading || !regionalImagery.bbox}
-                    className="w-full"
-                  >
-                    {timeLapse.timeLapseLoading && timeLapse.timeLapseMode === "5y" ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Film className="h-4 w-4" />
-                    )}
-                    Last 5 years
-                  </Button>
-                )}
+              {isRegionalSentinel && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    void timeLapse.loadRegionalSentinelFiveYearTimeLapse()
+                  }
+                  disabled={timeLapse.timeLapseLoading || !regionalImagery.bbox}
+                  className="w-full"
+                >
+                  {timeLapse.timeLapseLoading &&
+                  timeLapse.timeLapseMode === "5y" ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Film className="h-4 w-4" />
+                  )}
+                  Last 5 years
+                </Button>
+              )}
 
-                <LayerSwitcher
-                  value={layerId}
-                  onValueChange={setLayer}
-                  action={<ImageryInfoButton onClick={() => setInfoOpen(true)} />}
-                />
-                <DatePicker value={date} onChange={setDate} />
-              </>
+              <LayerSwitcher
+                value={layerId}
+                onValueChange={setLayer}
+                action={<ImageryInfoButton onClick={() => setInfoOpen(true)} />}
+              />
+              <DatePicker value={date} onChange={setDate} />
+            </>
           </aside>
         </div>
       </DialogContent>
@@ -644,7 +721,9 @@ export function ImageryModal() {
         title={
           isRegionalSentinel
             ? `${provider.name} · ${
-                timeLapse.timeLapseMode === "5y" ? "Last 5 years" : `${timeLapse.timeLapseMode} mosaics`
+                timeLapse.timeLapseMode === "5y"
+                  ? "Last 5 years"
+                  : `${timeLapse.timeLapseMode} mosaics`
               }`
             : `${provider.name} · ${timeLapse.timeLapseMode} days`
         }
