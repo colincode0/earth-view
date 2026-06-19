@@ -8,6 +8,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { BoundingBox } from "@/types/imagery";
 
 export type AskProvider = "openai" | "anthropic";
@@ -38,8 +45,6 @@ export type AskViewContext = {
 type AskViewModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  askProvider: AskProvider;
-  initialQuestion?: string;
   imageUrl: string | null;
   viewContext: AskViewContext | null;
   viewSignature: string;
@@ -50,13 +55,25 @@ type AskStreamEvent =
   | { type: "done"; message: string; viewBriefing?: string }
   | { type: "error"; error: string };
 
-const INITIAL_QUESTION =
-  "Explain what is visible in this satellite view and what this imagery layer is useful for.";
 const MAX_DIRECT_IMAGE_BYTES = 18 * 1024 * 1024;
 const OVERSIZED_IMAGE_MAX_EDGE = 2400;
 
 function providerLabel(provider: AskProvider) {
   return provider === "openai" ? "OpenAI" : "Anthropic";
+}
+
+function formatNumber(value: number, digits = 4) {
+  return Number(value.toFixed(digits)).toString();
+}
+
+function bboxLabel(bbox?: BoundingBox | null) {
+  if (!bbox) {
+    return "unavailable";
+  }
+
+  return `${formatNumber(bbox.minLat)}, ${formatNumber(bbox.minLon)} to ${formatNumber(
+    bbox.maxLat,
+  )}, ${formatNumber(bbox.maxLon)}`;
 }
 
 function loadImage(url: string) {
@@ -114,7 +131,7 @@ async function imageToDataUrl(url: string) {
       return await blobToDataUrl(blob);
     }
   } catch {
-    // Fallback keeps the source dimensions intact, but may re-encode if direct blob capture is unavailable.
+    // Fall back to canvas capture if direct blob capture is unavailable.
   }
 
   const image = await loadImage(url);
@@ -141,13 +158,16 @@ async function imageToDataUrl(url: string) {
   }
 }
 
-async function requestAskViewStream(params: {
-  provider: AskProvider;
-  messages: AskChatMessage[];
-  viewContext: AskViewContext;
-  imageDataUrl?: string;
-  viewBriefing?: string | null;
-}, onEvent: (event: AskStreamEvent) => void) {
+async function requestAskViewStream(
+  params: {
+    provider: AskProvider;
+    messages: AskChatMessage[];
+    viewContext: AskViewContext;
+    imageDataUrl?: string;
+    viewBriefing?: string | null;
+  },
+  onEvent: (event: AskStreamEvent) => void,
+) {
   const response = await fetch("/api/ask-view-stream", {
     method: "POST",
     headers: {
@@ -218,26 +238,28 @@ async function requestAskViewStream(params: {
 export function AskViewModal({
   open,
   onOpenChange,
-  askProvider,
-  initialQuestion,
   imageUrl,
   viewContext,
   viewSignature,
 }: AskViewModalProps) {
+  const [askProvider, setAskProvider] = useState<AskProvider>("openai");
   const [messages, setMessages] = useState<AskChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewBriefing, setViewBriefing] = useState<string | null>(null);
   const [sessionSignature, setSessionSignature] = useState<string | null>(null);
-  const [sessionProvider, setSessionProvider] = useState<AskProvider>(askProvider);
+  const [sessionProvider, setSessionProvider] = useState<AskProvider>("openai");
   const [sessionContext, setSessionContext] = useState<AskViewContext | null>(null);
+  const [sessionImageUrl, setSessionImageUrl] = useState<string | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const viewChanged = Boolean(open && sessionSignature && sessionSignature !== viewSignature);
   const displayedContext = sessionContext ?? viewContext;
-  const chatReady = messages.some(
-    (message) => message.role === "assistant" && message.content.trim().length > 0,
-  ) && !error;
+  const displayedImageUrl = sessionImageUrl ?? imageUrl;
+  const sessionStarted = messages.length > 0 || Boolean(sessionSignature);
+  const activeProvider = sessionStarted ? sessionProvider : askProvider;
+  const askReady = Boolean(imageUrl && viewContext);
+  const inputDisabled = loading || (!sessionStarted && !askReady);
 
   useEffect(() => {
     viewportRef.current?.scrollTo({ top: viewportRef.current.scrollHeight });
@@ -247,22 +269,126 @@ export function AskViewModal({
     if (!open) {
       setMessages([]);
       setInput("");
+      setLoading(false);
       setError(null);
       setViewBriefing(null);
       setSessionSignature(null);
-      setSessionProvider(askProvider);
+      setSessionProvider("openai");
       setSessionContext(null);
+      setSessionImageUrl(null);
+      setAskProvider("openai");
     }
-  }, [askProvider, open]);
+  }, [open]);
 
-  async function startSession() {
-    if (!imageUrl || !viewContext) {
+  function resetForCurrentView() {
+    setMessages([]);
+    setInput("");
+    setError(null);
+    setViewBriefing(null);
+    setSessionSignature(null);
+    setSessionProvider(askProvider);
+    setSessionContext(null);
+    setSessionImageUrl(null);
+  }
+
+  async function sendMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const question = input.trim();
+
+    if (!question || loading) {
+      return;
+    }
+
+    const hasPriorAssistant = messages.some(
+      (message) => message.role === "assistant" && message.content.trim().length > 0,
+    );
+    const isInitial = !hasPriorAssistant;
+
+    if (isInitial && (!imageUrl || !viewContext)) {
       setError("There is no rendered image available to ask about yet.");
       return;
     }
 
-    const question = initialQuestion?.trim() || INITIAL_QUESTION;
-    const initialMessages = [{ role: "user" as const, content: question }];
+    if (!isInitial && !sessionContext) {
+      setError("This chat is missing its original view context. Start a new chat for the current view.");
+      return;
+    }
+
+    const requestProvider = isInitial ? askProvider : sessionProvider;
+    const requestContext = isInitial ? viewContext : sessionContext;
+    const nextMessages = isInitial
+      ? [{ role: "user" as const, content: question }]
+      : [...messages, { role: "user" as const, content: question }];
+
+    if (!requestContext) {
+      setError("There is no view context available for this question.");
+      return;
+    }
+
+    setMessages(nextMessages);
+    setInput("");
+    setError(null);
+    setLoading(true);
+
+    if (isInitial) {
+      setSessionSignature(viewSignature);
+      setSessionProvider(askProvider);
+      setSessionContext(viewContext);
+      setSessionImageUrl(imageUrl);
+      setViewBriefing(null);
+    }
+
+    let assistantText = "";
+
+    try {
+      const imageDataUrl = isInitial && imageUrl ? await imageToDataUrl(imageUrl) : undefined;
+
+      setMessages([...nextMessages, { role: "assistant", content: "" }]);
+
+      await requestAskViewStream(
+        {
+          provider: requestProvider,
+          messages: nextMessages,
+          viewContext: requestContext,
+          imageDataUrl,
+          viewBriefing: isInitial ? null : viewBriefing,
+        },
+        (streamEvent) => {
+          if (streamEvent.type === "error") {
+            throw new Error(streamEvent.error);
+          }
+
+          if (streamEvent.type === "delta") {
+            assistantText += streamEvent.delta;
+            setMessages([...nextMessages, { role: "assistant", content: assistantText }]);
+            return;
+          }
+
+          assistantText = streamEvent.message;
+          setMessages([...nextMessages, { role: "assistant", content: assistantText }]);
+          setViewBriefing(streamEvent.viewBriefing ?? (isInitial ? null : viewBriefing));
+        },
+      );
+    } catch (requestError) {
+      if (!assistantText.trim()) {
+        setMessages(nextMessages);
+      }
+
+      setError(requestError instanceof Error ? requestError.message : "Ask View request failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function retryInitialRequest() {
+    const firstUserMessage = messages.find((message) => message.role === "user");
+
+    if (!firstUserMessage?.content.trim() || !imageUrl || !viewContext || loading) {
+      return;
+    }
+
+    const initialMessages = [{ role: "user" as const, content: firstUserMessage.content.trim() }];
 
     setMessages(initialMessages);
     setInput("");
@@ -271,89 +397,44 @@ export function AskViewModal({
     setSessionSignature(viewSignature);
     setSessionProvider(askProvider);
     setSessionContext(viewContext);
+    setSessionImageUrl(imageUrl);
     setLoading(true);
+
+    let assistantText = "";
 
     try {
       const imageDataUrl = await imageToDataUrl(imageUrl);
-      let assistantText = "";
 
       setMessages([...initialMessages, { role: "assistant", content: "" }]);
 
-      await requestAskViewStream({
-        provider: askProvider,
-        messages: initialMessages,
-        viewContext,
-        imageDataUrl,
-      }, (event) => {
-        if (event.type === "error") {
-          throw new Error(event.error);
-        }
+      await requestAskViewStream(
+        {
+          provider: sessionProvider,
+          messages: initialMessages,
+          viewContext,
+          imageDataUrl,
+        },
+        (streamEvent) => {
+          if (streamEvent.type === "error") {
+            throw new Error(streamEvent.error);
+          }
 
-        if (event.type === "delta") {
-          assistantText += event.delta;
+          if (streamEvent.type === "delta") {
+            assistantText += streamEvent.delta;
+            setMessages([...initialMessages, { role: "assistant", content: assistantText }]);
+            return;
+          }
+
+          assistantText = streamEvent.message;
           setMessages([...initialMessages, { role: "assistant", content: assistantText }]);
-          return;
-        }
-
-        assistantText = event.message;
-        setMessages([...initialMessages, { role: "assistant", content: assistantText }]);
-        setViewBriefing(event.viewBriefing ?? null);
-      });
+          setViewBriefing(streamEvent.viewBriefing ?? null);
+        },
+      );
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Ask View request failed.");
-    } finally {
-      setLoading(false);
-    }
-  }
+      if (!assistantText.trim()) {
+        setMessages(initialMessages);
+      }
 
-  useEffect(() => {
-    if (open && messages.length === 0 && !loading && !error) {
-      void startSession();
-    }
-    // This should only auto-start when the modal opens into a fresh state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  async function sendFollowUp(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!sessionContext || !chatReady || loading || !input.trim()) {
-      return;
-    }
-
-    const nextMessages = [...messages, { role: "user" as const, content: input.trim() }];
-
-    setMessages(nextMessages);
-    setInput("");
-    setError(null);
-    setLoading(true);
-
-    try {
-      let assistantText = "";
-
-      setMessages([...nextMessages, { role: "assistant", content: "" }]);
-
-      await requestAskViewStream({
-        provider: sessionProvider,
-        messages: nextMessages,
-        viewContext: sessionContext,
-        viewBriefing,
-      }, (event) => {
-        if (event.type === "error") {
-          throw new Error(event.error);
-        }
-
-        if (event.type === "delta") {
-          assistantText += event.delta;
-          setMessages([...nextMessages, { role: "assistant", content: assistantText }]);
-          return;
-        }
-
-        assistantText = event.message;
-        setMessages([...nextMessages, { role: "assistant", content: assistantText }]);
-        setViewBriefing(event.viewBriefing ?? viewBriefing);
-      });
-    } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Ask View request failed.");
     } finally {
       setLoading(false);
@@ -362,36 +443,78 @@ export function AskViewModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[min(94vw,860px)]">
-        <div className="grid max-h-[84vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
+      <DialogContent className="w-[min(94vw,920px)]">
+        <div className="grid max-h-[86vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
           <DialogHeader className="border-b border-border p-5 pr-10">
             <DialogTitle className="flex items-center gap-2">
               <Bot className="h-5 w-5 text-primary" />
-              Ask About This View
+              Ask AI
             </DialogTitle>
             <DialogDescription>
-              {providerLabel(sessionProvider)} · {displayedContext?.providerName ?? "Current view"}
+              {providerLabel(activeProvider)} - {displayedContext?.providerName ?? "Current view"}
             </DialogDescription>
           </DialogHeader>
 
-          <div ref={viewportRef} className="min-h-[360px] overflow-y-auto p-5">
+          <div ref={viewportRef} className="min-h-[420px] overflow-y-auto p-5">
+            <div className="mb-4 overflow-hidden rounded-md border border-border bg-black">
+              {displayedImageUrl ? (
+                <img
+                  src={displayedImageUrl}
+                  alt="Current satellite view"
+                  className="max-h-[280px] w-full object-contain"
+                  draggable={false}
+                />
+              ) : (
+                <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
+                  Current image unavailable
+                </div>
+              )}
+            </div>
+
             {displayedContext && (
               <div className="mb-4 rounded-md border border-border bg-background/45 p-3 text-xs text-muted-foreground">
-                <div className="font-medium text-foreground">{displayedContext.coordinates}</div>
-                <div>{displayedContext.captureLabel}</div>
-                <div>
-                  {displayedContext.satellite} · {displayedContext.category} ·{" "}
-                  {displayedContext.resolutionMeters}m nominal
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <div className="font-medium text-foreground">{displayedContext.coordinates}</div>
+                    <div>{displayedContext.captureLabel}</div>
+                  </div>
+                  <div>
+                    <div className="font-medium text-foreground">{displayedContext.providerName}</div>
+                    <div>
+                      {displayedContext.satellite} - {displayedContext.category} -{" "}
+                      {displayedContext.resolutionMeters}m nominal
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-2 border-t border-border/60 pt-2 font-mono text-[11px]">
+                  bbox {bboxLabel(displayedContext.bbox)} - zoom{" "}
+                  {formatNumber(displayedContext.imageryZoomDegrees, 3)} deg
                 </div>
               </div>
             )}
+
+            <div className="mb-4">
+              <Select
+                value={activeProvider}
+                onValueChange={(value) => setAskProvider(value as AskProvider)}
+                disabled={sessionStarted || loading}
+              >
+                <SelectTrigger aria-label="AI provider">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="openai">OpenAI</SelectItem>
+                  <SelectItem value="anthropic">Anthropic</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
             {viewChanged && (
               <div className="mb-4 rounded-md border border-primary/35 bg-primary/10 p-3 text-sm text-foreground">
                 <div className="mb-2 text-xs text-muted-foreground">
                   The imagery view changed after this chat started.
                 </div>
-                <Button type="button" variant="outline" size="sm" onClick={() => void startSession()}>
+                <Button type="button" variant="outline" size="sm" onClick={resetForCurrentView}>
                   <RefreshCcw className="h-3.5 w-3.5" />
                   Start chat for current view
                 </Button>
@@ -399,6 +522,12 @@ export function AskViewModal({
             )}
 
             <div className="space-y-3">
+              {messages.length === 0 && !loading && !error && (
+                <div className="rounded-md border border-dashed border-border bg-background/35 px-3 py-6 text-center text-sm text-muted-foreground">
+                  Ask a question about the current satellite view to start the chat.
+                </div>
+              )}
+
               {messages.map((message, index) => {
                 if (message.role === "assistant" && !message.content.trim()) {
                   return null;
@@ -428,9 +557,9 @@ export function AskViewModal({
               {error && (
                 <div className="rounded-md border border-destructive/35 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   {error}
-                  {!loading && !chatReady && (
+                  {!loading && messages.length > 0 && (
                     <div className="mt-2">
-                      <Button type="button" variant="outline" size="sm" onClick={() => void startSession()}>
+                      <Button type="button" variant="outline" size="sm" onClick={() => void retryInitialRequest()}>
                         <RefreshCcw className="h-3.5 w-3.5" />
                         Retry analysis
                       </Button>
@@ -441,15 +570,15 @@ export function AskViewModal({
             </div>
           </div>
 
-          <form onSubmit={sendFollowUp} className="flex gap-2 border-t border-border p-4">
+          <form onSubmit={sendMessage} className="flex gap-2 border-t border-border p-4">
             <input
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              disabled={loading || !chatReady}
-              placeholder="Ask a follow-up about this view"
+              disabled={inputDisabled}
+              placeholder={sessionStarted ? "Ask a follow-up about this view" : "Ask about this view"}
               className="flex h-10 min-w-0 flex-1 rounded-md border border-input bg-background/70 px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-50"
             />
-            <Button type="submit" disabled={loading || !chatReady || !input.trim()}>
+            <Button type="submit" disabled={inputDisabled || !input.trim()}>
               <Send className="h-4 w-4" />
               Send
             </Button>
