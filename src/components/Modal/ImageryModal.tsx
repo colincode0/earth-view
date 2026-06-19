@@ -8,13 +8,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { formatCoordinates } from "@/lib/geo";
 import {
   formatExactCaptureTime,
@@ -38,11 +31,10 @@ import { useModalPaneSize } from "./hooks/useModalPaneSize";
 import { useObjectUrls } from "./hooks/useObjectUrls";
 import { useRegionalImagery } from "./hooks/useRegionalImagery";
 import { useTimeLapse } from "./hooks/useTimeLapse";
-import { AskViewModal, type AskProvider, type AskViewContext } from "./AskViewModal";
+import { AskViewModal, type AskViewContext } from "./AskViewModal";
 import { LayerSwitcher } from "./LayerSwitcher";
 import { TimeLapseModal } from "./TimeLapseModal";
 
-const ASK_VIEW_VISIBLE = false;
 const SCENE_FOOTPRINT_STROKE = "#34d399";
 // Quick crossfade when a freshly loaded Sentinel image replaces the previous
 // one, masking the slight handoff shift. The outgoing layer is held a little
@@ -188,8 +180,6 @@ export function ImageryModal() {
   } = useAppStore();
   const [infoOpen, setInfoOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
-  const [askProvider, setAskProvider] = useState<AskProvider>("openai");
-  const [askPrompt, setAskPrompt] = useState("");
   const [hoveredSceneDateTime, setHoveredSceneDateTime] = useState<string | null>(null);
   const [imageFadeOutLayer, setImageFadeOutLayer] = useState<{ url: string; transform: string } | null>(
     null,
@@ -347,6 +337,12 @@ export function ImageryModal() {
       }
     : null;
   const askViewSignature = viewSignature(askViewContext, regionalImagery.imageUrl);
+  const askReady = Boolean(
+    regionalImagery.imageUrl &&
+      askViewContext &&
+      regionalImagery.bbox &&
+      !regionalImagery.imageLoading,
+  );
 
   function handleOpenChange(open: boolean) {
     if (open) {
@@ -511,6 +507,17 @@ export function ImageryModal() {
               </Button>
             )}
 
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setAskOpen(true)}
+              disabled={!askReady}
+              className="w-full justify-start"
+            >
+              <Bot className="h-4 w-4" />
+              Ask AI
+            </Button>
+
             <div className="rounded-md border border-border bg-background/45 p-4">
               <div className="mb-1 flex items-center gap-2 text-sm font-medium">
                 <Satellite className="h-4 w-4 text-primary" />
@@ -553,40 +560,6 @@ export function ImageryModal() {
             </div>
 
             <>
-                {ASK_VIEW_VISIBLE && (
-                  <div className="space-y-2 rounded-md border border-border bg-background/35 p-3">
-                    <Select
-                      value={askProvider}
-                      onValueChange={(value) => setAskProvider(value as AskProvider)}
-                    >
-                      <SelectTrigger aria-label="AI provider">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="openai">OpenAI</SelectItem>
-                        <SelectItem value="anthropic">Anthropic</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <textarea
-                      value={askPrompt}
-                      onChange={(event) => setAskPrompt(event.target.value)}
-                      rows={3}
-                      placeholder="Optional focus or context for the initial analysis"
-                      className="min-h-20 w-full resize-none rounded-md border border-input bg-background/70 px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                    />
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => setAskOpen(true)}
-                      disabled={!regionalImagery.imageUrl || regionalImagery.imageLoading}
-                      className="w-full"
-                    >
-                      <Bot className="h-4 w-4" />
-                      Ask about this view
-                    </Button>
-                  </div>
-                )}
-
                 <div className="grid grid-cols-2 gap-2">
                   <Button
                     type="button"
@@ -653,17 +626,13 @@ export function ImageryModal() {
           </aside>
         </div>
       </DialogContent>
-      {ASK_VIEW_VISIBLE && (
-        <AskViewModal
-          open={askOpen}
-          onOpenChange={setAskOpen}
-          askProvider={askProvider}
-          initialQuestion={askPrompt}
-          imageUrl={regionalImagery.imageUrl}
-          viewContext={askViewContext}
-          viewSignature={askViewSignature}
-        />
-      )}
+      <AskViewModal
+        open={askOpen}
+        onOpenChange={setAskOpen}
+        imageUrl={regionalImagery.imageUrl}
+        viewContext={askViewContext}
+        viewSignature={askViewSignature}
+      />
       <ImageryInfoModal open={infoOpen} onOpenChange={setInfoOpen} />
       <TimeLapseModal
         open={timeLapse.timeLapseOpen}
