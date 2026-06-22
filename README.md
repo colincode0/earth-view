@@ -1,3 +1,7 @@
+<img width="720" height="397" alt="vid_readme" src="https://github.com/user-attachments/assets/fa0cea26-17d4-475c-9544-a695d3ff43f8" />
+
+
+
 # Earth View
 
 Earth View is an open-source satellite imagery explorer built with React, Vite, Three.js, Tailwind CSS, and Zustand. It starts with a 3D NASA GIBS globe, lets you zoom into a detailed regional pass, and opens a modal workspace for higher-resolution inspection, Sentinel imagery, time lapses, Google Maps handoff, and optional AI-assisted image analysis.
