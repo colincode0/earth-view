@@ -49,6 +49,17 @@ const SCENE_FOOTPRINT_STROKE = "#34d399";
 // longer than the fade so the incoming image is fully opaque before removal.
 const SENTINEL_CROSSFADE_HOLD_MS = 300;
 
+// True when running inside the desktop (Electron) build, which injects this
+// marker via its preload script. Undefined in the web app, so desktop-specific
+// copy below stays inert on the web.
+const isDesktopApp = Boolean(
+  (window as unknown as { earthViewDesktop?: unknown }).earthViewDesktop,
+);
+
+function isSentinelCredentialsError(message: string) {
+  return /credentials are not configured/i.test(message);
+}
+
 function viewSignature(
   context: AskViewContext | null,
   imageUrl: string | null,
@@ -548,7 +559,9 @@ export function ImageryModal() {
               )}
             {regionalImagery.error && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/80 p-8 text-center text-sm text-muted-foreground">
-                {regionalImagery.error}
+                {isDesktopApp && isSentinelCredentialsError(regionalImagery.error)
+                  ? "Sentinel imagery needs Copernicus API keys. Open Settings from the menu (or Ctrl+,) to add them."
+                  : regionalImagery.error}
               </div>
             )}
           </div>

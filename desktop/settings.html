@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Earth View — Settings</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: #0b0f17;
+        color: #e6edf3;
+        padding: 24px;
+        line-height: 1.45;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 4px;
+      }
+      p.intro {
+        margin: 0 0 20px;
+        font-size: 13px;
+        color: #9aa7b4;
+      }
+      fieldset {
+        border: 1px solid #1f2937;
+        border-radius: 10px;
+        padding: 14px 16px 18px;
+        margin: 0 0 16px;
+      }
+      legend {
+        font-size: 13px;
+        font-weight: 600;
+        padding: 0 6px;
+        color: #c9d4df;
+      }
+      legend .hint {
+        font-weight: 400;
+        color: #7e8b99;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        color: #9aa7b4;
+        margin: 12px 0 4px;
+      }
+      input {
+        width: 100%;
+        background: #0f1622;
+        border: 1px solid #243042;
+        border-radius: 7px;
+        color: #e6edf3;
+        padding: 9px 10px;
+        font-size: 13px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      input:focus {
+        outline: none;
+        border-color: #3b82f6;
+      }
+      a {
+        color: #60a5fa;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-top: 8px;
+      }
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-top: 6px;
+      }
+      button {
+        background: #2563eb;
+        border: none;
+        color: white;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 10px 20px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #1d4ed8;
+      }
+      button.secondary {
+        background: transparent;
+        border: 1px solid #243042;
+        color: #c9d4df;
+        font-weight: 500;
+      }
+      #status {
+        font-size: 13px;
+        min-height: 18px;
+      }
+      #status.ok {
+        color: #4ade80;
+      }
+      #status.err {
+        color: #f87171;
+      }
+      .note {
+        font-size: 12px;
+        color: #7e8b99;
+        margin-top: 4px;
+      }
+      .blurb {
+        border: 1px solid #1f2937;
+        border-radius: 10px;
+        background: #0f1622;
+        padding: 14px 16px;
+        margin: 0 0 22px;
+        font-size: 13px;
+        color: #c9d4df;
+      }
+      .blurb p {
+        margin: 0 0 10px;
+      }
+      .blurb p:last-child {
+        margin-bottom: 0;
+      }
+      .blurb a {
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>About</h1>
+    <section class="blurb">
+      <p>
+        I made an album a few years ago, if you enjoy this app it would mean a lot
+        if you check out the music I have made :)
+      </p>
+      <p>
+        <a href="https://www.youtube.com/watch?v=wIFpKlDk3tg" target="_blank" rel="noreferrer">https://www.youtube.com/watch?v=wIFpKlDk3tg</a>
+      </p>
+      <p>
+        I made this app public so people could find cool things. If you find
+        anything interesting share it with me at
+        <a href="mailto:anotherinternetlad@gmail.com" target="_blank">anotherinternetlad@gmail.com</a>
+      </p>
+      <p>
+        No matter what your life is, you are the universe looking back at itself.
+        It matters that you are here.
+      </p>
+      <p>Happy exploring!</p>
+    </section>
+
+    <h1>API Keys</h1>
+    <p class="intro">
+      Earth View works without any keys (NASA imagery). Paste your own keys below to unlock
+      Sentinel imagery and Ask AI. Keys are stored only on this computer and used to talk to the
+      providers directly.
+    </p>
+
+    <form id="form">
+      <fieldset>
+        <legend>Copernicus / Sentinel <span class="hint">(optional)</span></legend>
+        <p class="note">
+          Create an OAuth client at the
+          <a href="https://shapps.dataspace.copernicus.eu/dashboard/" target="_blank" rel="noreferrer">Copernicus Sentinel Hub Dashboard</a>.
+        </p>
+        <label for="COPERNICUS_CLIENT_ID">Client ID</label>
+        <input id="COPERNICUS_CLIENT_ID" name="COPERNICUS_CLIENT_ID" autocomplete="off" spellcheck="false" />
+        <label for="COPERNICUS_CLIENT_SECRET">Client Secret</label>
+        <input id="COPERNICUS_CLIENT_SECRET" name="COPERNICUS_CLIENT_SECRET" type="password" autocomplete="off" spellcheck="false" />
+      </fieldset>
+
+      <fieldset>
+        <legend>Ask AI <span class="hint">(optional — either or both)</span></legend>
+        <label for="OPENAI_API_KEY">OpenAI API key</label>
+        <input id="OPENAI_API_KEY" name="OPENAI_API_KEY" type="password" autocomplete="off" spellcheck="false" />
+        <label for="ANTHROPIC_API_KEY">Anthropic API key</label>
+        <input id="ANTHROPIC_API_KEY" name="ANTHROPIC_API_KEY" type="password" autocomplete="off" spellcheck="false" />
+      </fieldset>
+
+      <div class="row">
+        <label style="margin: 0; cursor: pointer;">
+          <input type="checkbox" id="reveal" style="width: auto;" /> Show keys
+        </label>
+      </div>
+
+      <div class="actions">
+        <button type="submit">Save</button>
+        <span id="status"></span>
+      </div>
+    </form>
+
+    <script>
+      const FIELDS = [
+        "COPERNICUS_CLIENT_ID",
+        "COPERNICUS_CLIENT_SECRET",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+      ];
+      const secretFields = ["COPERNICUS_CLIENT_SECRET", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"];
+      const statusEl = document.getElementById("status");
+
+      function setStatus(message, kind) {
+        statusEl.textContent = message;
+        statusEl.className = kind || "";
+      }
+
+      async function load() {
+        try {
+          const res = await fetch("/api/desktop/settings");
+          const cfg = await res.json();
+          for (const field of FIELDS) {
+            if (cfg[field]) document.getElementById(field).value = cfg[field];
+          }
+        } catch (err) {
+          setStatus("Could not load saved settings.", "err");
+        }
+      }
+
+      document.getElementById("reveal").addEventListener("change", (event) => {
+        const type = event.target.checked ? "text" : "password";
+        for (const field of secretFields) {
+          document.getElementById(field).type = type;
+        }
+      });
+
+      document.getElementById("form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        setStatus("Saving…");
+        const payload = {};
+        for (const field of FIELDS) {
+          payload[field] = document.getElementById(field).value.trim();
+        }
+        try {
+          const res = await fetch("/api/desktop/settings", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) throw new Error("save failed");
+          setStatus("Saved. Changes take effect immediately.", "ok");
+        } catch (err) {
+          setStatus("Save failed.", "err");
+        }
+      });
+
+      load();
+    </script>
+  </body>
+</html>
