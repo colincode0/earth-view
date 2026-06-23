@@ -6,6 +6,14 @@
 
 Earth View is an open-source satellite imagery explorer built with React, Vite, Three.js, Tailwind CSS, and Zustand. It starts with a 3D NASA GIBS globe, lets you zoom into a detailed regional pass, and opens a modal workspace for higher-resolution inspection, Sentinel imagery, time lapses, Google Maps handoff, and optional AI-assisted image analysis.
 
+## Download for Windows
+
+Not a developer? Grab the desktop app — no setup required:
+
+**[⬇ Download Earth View for Windows](https://github.com/colincode0/earth-view/releases/latest/download/Earth-View-Setup.exe)**
+
+Run the installer (on first launch Windows may show a SmartScreen warning — click **More info → Run anyway**). The NASA globe works right away. To unlock Sentinel imagery and Ask AI, add your own free [Copernicus](https://shapps.dataspace.copernicus.eu/dashboard/) keys (and optional OpenAI / Anthropic keys) in the app's **Settings** window. Build details: [desktop/README.md](desktop/README.md).
+
 This README is focused on getting a new copy running from scratch. For deeper architecture notes and feature details, see [README-extended.md](README-extended.md).
 
 ## What Works Without API Keys
